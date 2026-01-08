@@ -1,11 +1,11 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
-	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
-	"isDesktopOnly": false
+  "id": "obsidian-pdf-transcriber",
+  "name": "PDF Transcriber",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Transcribe handwritten notes from PDFs using OpenAI's Vision API. Extract and play embedded audio recordings with automatic timestamp synchronization.",
+  "author": "Jules (PhD Researcher)",
+  "authorUrl": "https://github.com/yourusername/obsidian-pdf-transcriber",
+  "isDesktopOnly": true,
+  "fundingUrl": "https://buymeacoffee.com/yourusername"
 }
