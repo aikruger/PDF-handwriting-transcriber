@@ -11,16 +11,17 @@
 import { App, TFile } from 'obsidian';
 import { AudioExtractionResult } from './types';
 import { getExtensionFromMimeType } from './utils';
+import { PdfParser } from './pdf-parser';
 
 export class PDFAudioExtractor {
   
   /**
    * Main entry point for audio extraction
-   * Attempts Method 1 (Sound Objects), falls back to Method 2 (Scattered Frames)
+   * Attempts Method 1 (Structural - via PdfParser), then falls back to older methods if needed
    */
   static async extractAudioFromPDF(pdfBuffer: ArrayBuffer): Promise<AudioExtractionResult> {
     try {
-      console.log('🎵 Starting PDF audio extraction with compression support...');
+      console.log('🎵 Starting PDF audio extraction (Multi-Strategy)...');
 
       if (!pdfBuffer || pdfBuffer.byteLength === 0) {
         console.warn('Audio extraction: Empty PDF buffer');
@@ -30,12 +31,55 @@ export class PDFAudioExtractor {
       const pdfData = new Uint8Array(pdfBuffer);
       console.log(`Processing PDF buffer: ${pdfData.length} bytes`);
 
-      // ===== METHOD 1: Extract from PDF Sound Objects (with compression handling) =====
-      console.log('📋 Method 1: Analyzing PDF Objects for Sound streams...');
+      // ===== METHOD 1: Structural Extraction via PdfParser (Robust, xref-based) =====
+      console.log('📋 Method 1: Analyzing PDF Structure (xref/annotations)...');
+      try {
+        const objectOffsets = PdfParser.parsePdfXref(pdfData);
+        if (objectOffsets.size > 0) {
+            const pageAnnotations = PdfParser.findPageAnnotations(pdfData, objectOffsets);
+            
+            // Collect all audio candidates
+            const candidates: Uint8Array[] = [];
+            for (const page of pageAnnotations) {
+                for (const annotObjNum of page.annotObjNums) {
+                    const audioData = await PdfParser.extractAudioFromAnnotation(pdfData, annotObjNum, objectOffsets);
+                    if (audioData && audioData.length > 5000) { // Require reasonable size
+                        candidates.push(audioData);
+                    }
+                }
+            }
+
+            // Combine frames if we found them
+            if (candidates.length > 0) {
+                 const totalSize = candidates.reduce((sum, c) => sum + c.length, 0);
+                 const combined = new Uint8Array(totalSize);
+                 let offset = 0;
+                 for (const c of candidates) {
+                     combined.set(c, offset);
+                     offset += c.length;
+                 }
+
+                 const mimeType = PdfParser.detectMimeType(combined);
+                 console.log(`✅ Method 1 succeeded: ${combined.length} bytes (${mimeType})`);
+                 return {
+                    audioBuffer: combined.buffer as ArrayBuffer,
+                    mimeType: mimeType,
+                    found: true,
+                    method: 'structural-parsing'
+                 };
+            }
+        }
+      } catch(e) {
+        console.log(`⚠️ Method 1 failed: ${e}`);
+      }
+
+
+      // ===== METHOD 2: Legacy Object Scanning (older fallback) =====
+      console.log('⚠️ Method 1 failed or found no audio, attempting Method 2: Legacy Object Scan...');
       try {
         const audioData = await this.extractSoundObjects(pdfData);
         if (audioData && audioData.length > 10000) {
-          console.log(`✅ Method 1 succeeded: ${audioData.length} extracted bytes`);
+          console.log(`✅ Method 2 succeeded: ${audioData.length} extracted bytes`);
           return {
             audioBuffer: audioData.buffer as ArrayBuffer,
             mimeType: 'audio/mpeg',
@@ -44,15 +88,15 @@ export class PDFAudioExtractor {
           };
         }
       } catch (error) {
-        console.log(`⚠️ Method 1 failed: ${error}`);
+        console.log(`⚠️ Method 2 failed: ${error}`);
       }
 
-      // ===== METHOD 2: Fallback to Scattered MP3 Frame Collection =====
-      console.log('⚠️ Method 1 failed or insufficient data, attempting Method 2: Scattered frame collection...');
+      // ===== METHOD 3: Fallback to Scattered MP3 Frame Collection =====
+      console.log('⚠️ Methods 1 & 2 failed, attempting Method 3: Scattered frame collection...');
       try {
         const audioData = this.extractMp3Audio(pdfData);
         if (audioData && audioData.length > 10000) {
-          console.log(`✅ Method 2 succeeded: ${audioData.length} extracted bytes`);
+          console.log(`✅ Method 3 succeeded: ${audioData.length} extracted bytes`);
           return {
             audioBuffer: audioData.buffer as ArrayBuffer,
             mimeType: 'audio/mpeg',
@@ -61,7 +105,7 @@ export class PDFAudioExtractor {
           };
         }
       } catch (error) {
-        console.log(`⚠️ Method 2 also failed: ${error}`);
+        console.log(`⚠️ Method 3 also failed: ${error}`);
       }
 
       console.log('❌ No audio extraction method succeeded');
@@ -74,7 +118,7 @@ export class PDFAudioExtractor {
   }
 
   /**
-   * METHOD 1: Extract audio from PDF Sound objects
+   * METHOD 2: Extract audio from PDF Sound objects (Legacy Scanner)
    * Handles zlib-compressed streams and embedded audio
    */
   private static async extractSoundObjects(pdfData: Uint8Array): Promise<Uint8Array | null> {
@@ -319,7 +363,7 @@ export class PDFAudioExtractor {
   }
 
   /**
-   * METHOD 2: Extract MP3 by collecting scattered frames throughout PDF
+   * METHOD 3: Extract MP3 by collecting scattered frames throughout PDF
    * Falls back here if Method 1 doesn't find sufficient audio
    */
   private static extractMp3Audio(pdfData: Uint8Array): Uint8Array | null {
