@@ -30,7 +30,7 @@ export interface AudioExtractionResult {
   audioBuffer: ArrayBuffer | null;
   mimeType: string | null;
   found: boolean;
-  method?: 'stream' | 'embedded';
+  method?: string;
 }
 
 export interface PageRenderResult {
