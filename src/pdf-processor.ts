@@ -3,7 +3,7 @@
  * Handles PDF rendering, page processing, and transcription
  */
 
-import { App, TFile, FileSystemAdapter } from 'obsidian';
+import { App, TFile } from 'obsidian';
 import { PDF_JS_URL } from './constants';
 import { PageRenderResult } from './types';
 
@@ -28,21 +28,14 @@ export class PDFProcessor {
       const vaultFile = this.app.vault.getAbstractFileByPath(filePath);
       if (vaultFile instanceof TFile) {
         const arrayBuffer = await this.app.vault.readBinary(vaultFile);
-        return arrayBuffer;
+        // ✅ CLONE THE BUFFER - Creates new ArrayBuffer instance
+        // This prevents the original from being detached by other operations
+        const clonedBuffer = arrayBuffer.slice(0);
+        console.log(`Cloned PDF buffer: ${clonedBuffer.byteLength} bytes`);
+        return clonedBuffer;
       }
 
-      const adapter = this.app.vault.adapter;
-      if (adapter instanceof FileSystemAdapter) {
-        const basePath = adapter.getBasePath();
-        const absolutePath =
-          filePath.startsWith('/') || filePath.includes(':\\\\')
-            ? filePath
-            : `${basePath}/${filePath}`;
-
-        const fs = require('fs').promises;
-        return await fs.readFile(absolutePath);
-      }
-
+      console.error('File not found in vault or invalid file type:', filePath);
       return null;
     } catch (error) {
       console.error('Error reading PDF:', error);
@@ -55,13 +48,21 @@ export class PDFProcessor {
    */
   async loadPDFLibrary(): Promise<void> {
     if (window.pdfjsLib) {
+      if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@3.8.162/build/pdf.worker.min.js';
+      }
       return;
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const script = document.createElement('script');
       script.src = PDF_JS_URL;
-      script.onload = resolve as any;
+      script.onload = () => {
+        if (window.pdfjsLib) {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@3.8.162/build/pdf.worker.min.js';
+        }
+        resolve();
+      };
       script.onerror = () => reject(new Error('Failed to load PDF.js'));
       document.head.appendChild(script);
     });
@@ -73,7 +74,9 @@ export class PDFProcessor {
   async getPageCount(pdfBuffer: ArrayBuffer): Promise<number> {
     await this.loadPDFLibrary();
 
-    const loadingTask = window.pdfjsLib.getDocument({ data: pdfBuffer });
+    // Clone to prevent detachment of the input buffer
+    const safeBuffer = pdfBuffer.slice(0);
+    const loadingTask = window.pdfjsLib.getDocument({ data: safeBuffer });
     const pdf = await loadingTask.promise;
     return pdf.numPages;
   }
@@ -89,7 +92,9 @@ export class PDFProcessor {
   ): Promise<PageRenderResult[]> {
     await this.loadPDFLibrary();
 
-    const loadingTask = window.pdfjsLib.getDocument({ data: pdfBuffer });
+    // Clone to prevent detachment of the input buffer (crucial for batch processing)
+    const safeBuffer = pdfBuffer.slice(0);
+    const loadingTask = window.pdfjsLib.getDocument({ data: safeBuffer });
     const pdf = await loadingTask.promise;
 
     const results: PageRenderResult[] = [];

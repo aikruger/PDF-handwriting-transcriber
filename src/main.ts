@@ -125,13 +125,23 @@ export default class PDFTranscriberPlugin extends Plugin {
           // This prevents the primary buffer from being transferred
           const audioBuffer = pdfBuffer.slice(0);
           
+          // LOG 1: Right before extraction
+          console.log(`📦 EXTRACT INPUT: ${(audioBuffer.byteLength/1024/1024).toFixed(2)}MB, first 4: ${Array.from(new Uint8Array(audioBuffer)).slice(0,4).map(b=>'0x'+b.toString(16).padStart(2,'0')).join(' ')}`);
+          
           // Use standard Extractor
           const audioResult = await PDFAudioExtractor.extractAudioFromPDF(audioBuffer);
 
           if (audioResult.found && audioResult.audioBuffer) {
+            // LOG 2: Right after extraction
+            console.log(`✅ EXTRACT OUTPUT: ${(audioResult.audioBuffer.byteLength/1024/1024).toFixed(2)}MB, first 4: ${Array.from(new Uint8Array(audioResult.audioBuffer)).slice(0,4).map(b=>'0x'+b.toString(16).padStart(2,'0')).join(' ')}`);
+            
             status.setMessage('💾 Saving extracted audio...');
 
             const pdfFileName = pdfPath.split('/').pop() || 'audio';
+            
+            // LOG 3: Right before saveAudioToVault call
+            console.log(`🔍 ABOUT TO SAVE: ${(audioResult.audioBuffer.byteLength/1024/1024).toFixed(2)}MB, first 4: ${Array.from(new Uint8Array(audioResult.audioBuffer)).slice(0,4).map(b=>'0x'+b.toString(16).padStart(2,'0')).join(' ')}`);
+            
             // Use standard Extractor
             audioPath = await PDFAudioExtractor.saveAudioToVault(
               this.app,

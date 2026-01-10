@@ -1,6 +1,6 @@
 {
-  "id": "obsidian-pdf-transcriber",
-  "name": "PDF Transcriber",
+  "id": "obsidian-pdf-transcriber2",
+  "name": "PDF Transcriber2",
   "version": "1.0.0",
   "minAppVersion": "0.15.0",
   "description": "Transcribe handwritten notes from PDFs using OpenAI's Vision API. Extract and play embedded audio recordings with automatic timestamp synchronization.",

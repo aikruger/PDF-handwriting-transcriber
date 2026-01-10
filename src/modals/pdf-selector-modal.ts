@@ -167,15 +167,22 @@ export class PDFSelectorModal extends Modal {
 
     this.displaySearchResults();
 
-    // Selected PDF display
+    // ✅ SELECTED PDF DISPLAY (MOVED UP)
     const selectedDiv = container.createDiv();
     selectedDiv.createEl('h4', { text: 'Selected PDF' });
+    
+    // Create persistent element for selected PDF
     const selectedPdfEl = selectedDiv.createEl('div');
+    selectedPdfEl.id = 'selected-pdf-display';  // ✅ Give it an ID
     selectedPdfEl.style.padding = '10px';
     selectedPdfEl.style.backgroundColor = 'var(--background-secondary)';
     selectedPdfEl.style.borderRadius = '4px';
     selectedPdfEl.style.minHeight = '40px';
-    selectedPdfEl.textContent = this.pdfPath || 'No PDF selected';
+    selectedPdfEl.style.border = '2px solid var(--background-modifier-border)';
+    selectedPdfEl.style.marginBottom = '15px';
+    
+    // Initial display
+    this.updateSelectedPdfDisplay(selectedPdfEl);
 
     // Content mode selector
     container.createEl('h3', { text: 'Processing Mode' });
@@ -234,6 +241,33 @@ export class PDFSelectorModal extends Modal {
       this.onSubmit(this.pdfPath, customOptions);
       this.close();
     });
+  }
+
+  // ✅ NEW METHOD: Update selected PDF display
+  private updateSelectedPdfDisplay(element: HTMLElement) {
+    element.empty();
+    
+    if (!this.pdfPath) {
+      element.textContent = 'No PDF selected';
+      element.style.color = 'var(--text-muted)';
+      element.style.fontStyle = 'italic';
+    } else {
+      const fileName = this.pdfPath.split('/').pop();
+      const folderPath = this.pdfPath.substring(0, this.pdfPath.lastIndexOf('/'));
+      
+      // Create formatted display
+      element.style.color = 'var(--text-normal)';
+      element.style.fontStyle = 'normal';
+      
+      const nameEl = element.createEl('strong', { text: fileName });
+      nameEl.style.display = 'block';
+      nameEl.style.marginBottom = '4px';
+      nameEl.style.fontSize = '14px';
+      
+      const pathEl = element.createEl('small', { text: `📁 ${folderPath}` });
+      pathEl.style.color = 'var(--text-muted)';
+      pathEl.style.display = 'block';
+    }
   }
 
   private createPagesUI(container: HTMLElement) {
@@ -380,30 +414,66 @@ export class PDFSelectorModal extends Modal {
     this.searchResultsEl.empty();
 
     if (this.filteredPdfFiles.length === 0) {
-      const noResults = this.searchResultsEl.createEl('p', { text: 'No PDFs found' });
+      const noResults = this.searchResultsEl.createEl('p', { text: '📭 No PDFs found' });
       noResults.style.color = 'var(--text-muted)';
+      noResults.style.padding = '10px';
       return;
     }
 
-    this.filteredPdfFiles.slice(0, 20).forEach((file) => {
+    this.filteredPdfFiles.slice(0, 25).forEach((file) => {
       const resultItem = this.searchResultsEl!.createDiv('search-result-item');
-      resultItem.textContent = file;
       resultItem.style.padding = '8px 12px';
       resultItem.style.cursor = 'pointer';
       resultItem.style.borderBottom = '1px solid var(--background-modifier-border)';
+      resultItem.style.transition = 'all 0.15s ease';
+      
+      // File name + path
+      const fileName = file.split('/').pop();
+      const folderPath = file.substring(0, file.lastIndexOf('/'));
+      
+      const nameEl = resultItem.createEl('div', { text: fileName });
+      nameEl.style.fontWeight = '500';
+      nameEl.style.marginBottom = '2px';
+      
+      const pathEl = resultItem.createEl('small', { text: folderPath });
+      pathEl.style.color = 'var(--text-muted)';
 
-      resultItem.addEventListener('mouseenter', () => {
+      // Highlight if selected
+      if (file === this.pdfPath) {
         resultItem.style.backgroundColor = 'var(--background-modifier-hover)';
+        resultItem.style.borderLeft = '3px solid var(--interactive-accent)';
+        resultItem.style.paddingLeft = '9px';
+        nameEl.style.color = 'var(--interactive-accent)';
+      }
+
+      // Click handler
+      resultItem.addEventListener('mouseenter', () => {
+        if (file !== this.pdfPath) {
+          resultItem.style.backgroundColor = 'var(--background-modifier-hover)';
+        }
       });
 
       resultItem.addEventListener('mouseleave', () => {
-        resultItem.style.backgroundColor = 'transparent';
+        if (file !== this.pdfPath) {
+          resultItem.style.backgroundColor = 'transparent';
+        }
       });
 
       resultItem.addEventListener('click', () => {
+        // ✅ UPDATE STATE
         this.pdfPath = file;
         this.selectedPages = [];
+        
+        // ✅ IMMEDIATELY UPDATE DISPLAY
+        const displayEl = document.getElementById('selected-pdf-display');
+        if (displayEl) {
+          this.updateSelectedPdfDisplay(displayEl);
+        }
+        
+        // ✅ REFRESH SEARCH RESULTS with highlighting
         this.displaySearchResults();
+        
+        new Notice(`✅ Selected: ${file.split('/').pop()}`);
       });
     });
   }

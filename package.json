@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "description": "Transcribe handwritten notes from PDFs using OpenAI's Vision API with audio extraction",
   "main": "main.js",
-  "types": "main.ts",
+  "types": "src/main.ts",
   "scripts": {
-    "dev": "esbuild main.ts --bundle --external:obsidian --outfile=main.js --sourcemap --watch",
-    "build": "esbuild main.ts --bundle --external:obsidian --outfile=main.js --minify"
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production"
   },
   "keywords": [
     "obsidian",
@@ -24,9 +24,13 @@
     "@typescript-eslint/eslint-plugin": "5.2.0",
     "@typescript-eslint/parser": "5.2.0",
     "builtin-modules": "3.2.0",
-    "esbuild": "0.13.12",
+    "esbuild": "^0.27.2",
+    "eslint": "^9.39.2",
     "obsidian": "latest",
     "tslib": "2.4.0",
     "typescript": "4.7.4"
+  },
+  "dependencies": {
+    "pako": "^2.1.0"
   }
 }

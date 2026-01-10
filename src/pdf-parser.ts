@@ -1,8 +1,12 @@
 /**
  * PDF Parser for Structural Audio Extraction
  * Implements proper PDF structure parsing following ISO 32000-1 specification
- * Uses native DecompressionStream instead of pako for Obsidian compatibility
+ * Uses pako for reliable FLATE decompression
  */
+
+// @ts-ignore - pako doesn't have type definitions
+import * as pako from 'pako';
+
 export class PdfParser {
 
     /**
@@ -44,6 +48,7 @@ export class PdfParser {
         
         for (const subsectionMatch of matches) {
           const startObjNum = parseInt(subsectionMatch[1] ?? '0');
+          const numObjs = parseInt(subsectionMatch[2] ?? '0');
           const entries = subsectionMatch[3]?.trim().split('\n') || [];
           
           let currentObjNum = startObjNum;
@@ -73,7 +78,7 @@ export class PdfParser {
         return objectOffsets;
         
       } catch (error: any) {
-        // console.error('❌ Error parsing xref:', error); // Squelch noise
+        console.error('❌ Error parsing xref:', error);
         return objectOffsets;
       }
     }
@@ -105,7 +110,7 @@ export class PdfParser {
   
     /**
      * Find page objects and extract their /Annots (annotation) arrays
-     * Returns list of pages and which annotation objects they contain
+     * NEW: Also scans all objects directly for Sound annotations if page tree fails
      */
     static findPageAnnotations(
       pdfData: Uint8Array,
@@ -114,14 +119,39 @@ export class PdfParser {
       const annotations: Array<{ pageNum: number; annotObjNums: number[] }> = [];
       
       try {
+        // STRATEGY 1: Scan all objects for Sound/RichMedia annotations directly
+        console.log('  📋 Scanning all objects for Sound/RichMedia annotations...');
+        const soundAnnotations: number[] = [];
+        
+        for (const [objNum, offset] of objectOffsets.entries()) {
+          const objText = this.extractObjectAtOffset(pdfData, offset);
+          
+          // Check if this is a Sound or RichMedia annotation
+          if (objText.includes('/Subtype') && 
+              (objText.includes('/Sound') || objText.includes('/RichMedia'))) {
+            console.log(`    🔊 Found annotation object ${objNum}`);
+            soundAnnotations.push(objNum);
+          }
+        }
+        
+        if (soundAnnotations.length > 0) {
+          console.log(`  ✅ Direct scan found ${soundAnnotations.length} Sound/RichMedia annotations`);
+          // Return as a single "page" with all annotations
+          annotations.push({
+            pageNum: 1,
+            annotObjNums: soundAnnotations
+          });
+          return annotations;
+        }
+        
+        // STRATEGY 2: Traditional page tree scan (fallback)
+        console.log('  📋 Fallback: Scanning page tree for annotations...');
         const text = new TextDecoder().decode(pdfData);
         
         // Pattern: "n 0 obj << ... /Type /Page ... >> endobj"
-        // We need to find page objects specifically
         const pagePattern = /(\d+)\s+0\s+obj\s*<<([\s\S]*?)endobj/g;
         
         let pageNum = 1;
-
         const matches = [...text.matchAll(pagePattern)];
         
         for (const match of matches) {
@@ -196,13 +226,21 @@ export class PdfParser {
         let streamObjNum: number | null = null;
         let annotType = 'Unknown';
         
-        // Sound annotation: /Contents reference
+        // Sound annotation: /Sound reference (can be direct stream or /Contents reference)
         const soundMatch = annotObjText.match(/\/Subtype\s*\/Sound/i);
         if (soundMatch) {
           annotType = 'Sound';
+          
+          // Try /Contents reference first
           const contentsMatch = annotObjText.match(/\/Contents\s+(\d+)\s+0\s+R/);
           if (contentsMatch && contentsMatch[1]) {
             streamObjNum = parseInt(contentsMatch[1]);
+          } else {
+            // Try /Sound reference
+            const soundRefMatch = annotObjText.match(/\/Sound\s+(\d+)\s+0\s+R/);
+            if (soundRefMatch && soundRefMatch[1]) {
+              streamObjNum = parseInt(soundRefMatch[1]);
+            }
           }
         }
         
@@ -217,7 +255,7 @@ export class PdfParser {
         }
         
         if (!streamObjNum) {
-          // console.warn(`⚠️ No stream reference in ${annotType} annotation ${annotObjNum}`);
+          console.warn(`⚠️ No stream reference in ${annotType} annotation ${annotObjNum}`);
           return null;
         }
         
@@ -234,7 +272,7 @@ export class PdfParser {
   
     /**
      * Extract and decompress an audio stream object
-     * Handles /FlateDecode compression
+     * Handles /FlateDecode compression using pako
      */
     static async extractAudioStream(
       pdfData: Uint8Array,
@@ -273,7 +311,7 @@ export class PdfParser {
         const lengthMatch = dictStr.match(/\/Length\s+(\d+)/);
         const declaredLength = lengthMatch ? parseInt(lengthMatch[1] ?? '0') : null;
         
-        // console.log(`    📊 Stream ${streamObjNum}: Flate=${isFlateEncoded}, Length=${declaredLength}`);
+        console.log(`    📊 Stream ${streamObjNum}: Flate=${isFlateEncoded}, Length=${declaredLength}`);
         
         // Extract the binary stream data
         const streamData = this.extractBinaryStream(pdfData, offset, declaredLength);
@@ -283,28 +321,18 @@ export class PdfParser {
           return null;
         }
         
-        // console.log(`    ✓ Extracted ${streamData.length} bytes from stream ${streamObjNum}`);
+        console.log(`    ✓ Extracted ${streamData.length} bytes from stream ${streamObjNum}`);
         
-        // Decompress if needed
+        // Decompress if needed using pako
         if (isFlateEncoded) {
           try {
-            // NATIVE DECOMPRESSION (No Pako dependency)
-            const ds = new DecompressionStream('deflate');
-            const writer = ds.writable.getWriter();
-            writer.write(streamData);
-            writer.close();
-            const decompressedBuffer = await new Response(ds.readable).arrayBuffer();
-            const decompressed = new Uint8Array(decompressedBuffer);
-
-            // console.log(`    📦 Decompressed: ${streamData.length} → ${decompressed.length} bytes`); 
+            // Use pako for PDF Flate decompression (better than DecompressionStream)
+            const inflated = pako.inflate(streamData);
+            const decompressed = new Uint8Array(inflated);
+            console.log(`    📦 Decompressed: ${streamData.length} → ${decompressed.length} bytes`);
             
             // Verify decompressed data is substantial (not just header)
-            if (decompressed.length > 5000) { // check for decent size
-              return decompressed;
-            } else {
-              console.warn(`⚠️ Decompressed size too small: ${decompressed.length} bytes`);
-              return null;
-            }
+            return decompressed.length > 10000 ? decompressed : (console.warn(`⚠️ Decompressed size too small: ${decompressed.length} bytes`), null);
           } catch (decompressError) {
             console.warn(`⚠️ Decompression failed for stream ${streamObjNum}: ${decompressError}`);
             // Return raw data if decompression fails (not ideal, but better than nothing)
@@ -367,7 +395,7 @@ export class PdfParser {
           dataStart++;
         }
         
-        let dataEnd: number;
+        let dataEnd = pdfData.length; // Initialize with fallback value
         
         if (declaredLength !== null && declaredLength > 0) {
           // Use declared length (most reliable approach)
@@ -396,10 +424,9 @@ export class PdfParser {
           }
           
           if (!foundEnd) {
-            // console.warn('⚠️ No "endstream" keyword found');
+            console.warn('⚠️ No "endstream" keyword found');
             return null;
           }
-          dataEnd = pdfData.length; // Fallback to end if loop fails to set it but breaks logic (logic above works)
         }
         
         // Extract the binary data
@@ -452,7 +479,6 @@ export class PdfParser {
      */
     static detectMimeType(data: Uint8Array): string {
       if (!data || data.length < 4) return 'audio/mpeg'; // Default
-      
       if ((data[0] === 255 && (data[1] === 251 || data[1] === 250 || data[1] === 249 || data[1] === 241 || data[1] === 240)) ||
           (data[0] === 73 && data[1] === 68 && data[2] === 51)) {
         return 'audio/mpeg'; // MP3
