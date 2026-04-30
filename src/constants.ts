@@ -26,7 +26,7 @@ export const DEFAULT_SETTINGS: PDFTranscriberSettings = {
 
   ollamaUrl: 'http://localhost:11434',
   ollamaModel: 'llava',
-  ollamaTimeoutMs: 120000,
+  ollamaTimeoutMs: 300000,
 
   defaultPdfFolder: '',
   maxPages: 50,

@@ -4,7 +4,7 @@ interface OllamaGenerateRequest {
   model: string;
   prompt: string;
   images: string[]; // raw base64 strings — NO "data:..." prefix
-  stream: false;
+  stream: boolean;
   options?: {
     temperature?: number;
     num_predict?: number;
@@ -126,17 +126,64 @@ export class OllamaProvider implements TranscriptionProvider {
     }
   }
 
+  /**
+   * Compress a base64 PNG/JPEG to a maximum width before sending to Ollama.
+   * Vision models don't benefit from images wider than 1024-1280px.
+   * Reducing a 3000px page to 1200px cuts payload size by ~85%.
+   */
+  private static async compressBase64Image(
+    base64: string,
+    maxWidth: number
+  ): Promise<string> {
+    return new Promise((resolve) => {
+      const img = new Image();
+
+      img.onload = () => {
+        // If already small enough, return original unchanged
+        if (img.width <= maxWidth) {
+          resolve(base64);
+          return;
+        }
+
+        const ratio = maxWidth / img.width;
+        const canvas = document.createElement('canvas');
+        canvas.width = maxWidth;
+        canvas.height = Math.floor(img.height * ratio);
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(base64); // Fallback: return original if canvas fails
+          return;
+        }
+
+        // White background (important for handwriting)
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        // JPEG at 0.88 quality gives excellent text reproduction at smaller size
+        const compressed = canvas.toDataURL('image/jpeg', 0.88).split(',')[1];
+        resolve(compressed!);
+      };
+
+      img.onerror = () => resolve(base64); // Fallback on error
+      img.src = `data:image/png;base64,${base64}`;
+    });
+  }
+
   async transcribeImage(imageDataUrl: string, prompt: string): Promise<string> {
     // Strip the data URL prefix — Ollama expects raw base64
     const base64 = imageDataUrl.includes(',')
       ? imageDataUrl.split(',')[1]
       : imageDataUrl;
 
+    const compressedImage = await OllamaProvider.compressBase64Image(base64!, 1200);
+
     const requestBody: OllamaGenerateRequest = {
       model: this.model,
       prompt,
-      images: [base64 as string],
-      stream: false,
+      images: [compressedImage],
+      stream: true,
       options: {
         temperature: 0.1,
         num_predict: 4096,
@@ -144,10 +191,19 @@ export class OllamaProvider implements TranscriptionProvider {
     };
 
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(
-      () => controller.abort(),
-      this.timeoutMs
-    );
+
+    let inactivityTimer: number;
+    const resetInactivity = () => {
+      window.clearTimeout(inactivityTimer);
+      inactivityTimer = window.setTimeout(() => {
+        controller.abort();
+      }, 30000); // 30s with no new tokens = abort
+    };
+
+    // Also keep an absolute ceiling to prevent infinite hangs
+    const absoluteTimer = window.setTimeout(() => {
+      controller.abort();
+    }, this.timeoutMs);
 
     try {
       const response = await fetch(`${this.baseUrl}/api/generate`, {
@@ -184,25 +240,66 @@ export class OllamaProvider implements TranscriptionProvider {
         throw new Error(`Ollama API error ${response.status}: ${errorBody}`);
       }
 
-      const data = (await response.json()) as OllamaGenerateResponse;
-
-      if (!data.response) {
-        throw new Error(
-          'Ollama returned an empty response. The model may not support vision/image input.'
-        );
+      if (!response.body) {
+        throw new Error('Ollama returned no response body. The model may not support vision input.');
       }
 
-      return data.response.trim();
+      // Read the stream, collecting tokens as they arrive
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let fullResponse = '';
+
+      resetInactivity(); // Start inactivity timer
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        resetInactivity(); // Reset on every chunk received
+
+        // Each chunk may contain one or more newline-delimited JSON objects
+        const chunkText = decoder.decode(value, { stream: true });
+        const lines = chunkText.split('\n').filter(line => line.trim().length > 0);
+
+        for (const line of lines) {
+          try {
+            const parsed = JSON.parse(line) as { response?: string; done?: boolean; error?: string };
+
+            if (parsed.error) {
+              throw new Error(`Ollama model error: ${parsed.error}`);
+            }
+
+            if (parsed.response) {
+              fullResponse += parsed.response;
+            }
+
+            if (parsed.done) {
+              // Stream complete
+              return fullResponse.trim();
+            }
+          } catch (parseErr) {
+            // Ignore malformed JSON lines (can happen at stream boundaries)
+            if ((parseErr as Error).message.startsWith('Ollama model error')) {
+              throw parseErr;
+            }
+          }
+        }
+      }
+
+      return fullResponse.trim() || '*[Model returned no text]*';
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
         throw new Error(
-          `Ollama request timed out after ${this.timeoutMs / 1000}s. ` +
-            'Try increasing the timeout in settings, or use a smaller/faster model.'
+          'Ollama stopped responding for 30 seconds. ' +
+          'Try: (1) a smaller model like llava:7b or moondream, ' +
+          '(2) reduce the Page render scale in settings to 1.0, ' +
+          '(3) run "ollama ps" to check if the model is loaded'
         );
       }
       throw err;
     } finally {
-      window.clearTimeout(timeoutId);
+      window.clearTimeout(inactivityTimer!);
+      window.clearTimeout(absoluteTimer);
     }
   }
 }

@@ -216,13 +216,13 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
       });
 
       new Setting(containerEl)
-        .setName('Request timeout (seconds)')
+        .setName('Absolute timeout ceiling (seconds)')
         .setDesc(
-          'How long to wait for Ollama per page. Increase for slow hardware. Default: 120s'
+          'Maximum total time allowed per page. With streaming enabled, ' + 'the plugin also auto-cancels if no new tokens arrive for 30 seconds. ' + 'You can now safely reduce this to 120-180s. Default: 300s'
         )
         .addSlider((slider) =>
           slider
-            .setLimits(30, 600, 30)
+            .setLimits(60, 600, 30)
             .setValue(this.plugin.settings.ollamaTimeoutMs / 1000)
             .setDynamicTooltip()
             .onChange(async (value) => {
