@@ -90,8 +90,8 @@ export class PDFProcessor {
   async renderPagesToImages(
     pdfBuffer: ArrayBuffer,
     pageNumbers: number[],
-    renderScale: number = 2.0,
-    imageQuality: number = 0.9
+    renderScale: number = 1.5,
+    imageQuality: number = 0.85
   ): Promise<PageRenderResult[]> {
     await this.loadPDFLibrary();
 

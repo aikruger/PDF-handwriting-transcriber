@@ -64,7 +64,9 @@ export default class PDFTranscriberPlugin extends Plugin {
       return new OllamaProvider(
         this.settings.ollamaUrl,
         this.settings.ollamaModel,
-        this.settings.ollamaTimeoutMs
+        this.settings.ollamaTimeoutMs,
+        this.settings.ollamaInactivityTimeoutMs,
+        this.settings.disableOllamaInactivityAbort
       );
     }
     return new OpenAIProvider(
@@ -140,10 +142,15 @@ export default class PDFTranscriberPlugin extends Plugin {
           `🖼️ Rendering page${batch.length > 1 ? 's' : ''} ${batch.join(', ')} / ${numPages}...`
         );
 
+        const effectiveRenderScale =
+          this.settings.aiProvider === "ollama"
+            ? Math.min(this.settings.renderScale, 1.5)
+            : this.settings.renderScale;
+
         const pageResults = await this.processor.renderPagesToImages(
           pdfBuffer,
           batch,
-          this.settings.renderScale,
+          effectiveRenderScale,
           this.settings.imageQuality
         );
 

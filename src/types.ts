@@ -12,6 +12,8 @@ export interface PDFTranscriberSettings {
   ollamaUrl: string;
   ollamaModel: string;
   ollamaTimeoutMs: number;
+  ollamaInactivityTimeoutMs: number;
+  disableOllamaInactivityAbort: boolean;
 
   // PDF processing
   defaultPdfFolder: string;

@@ -218,7 +218,7 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName('Absolute timeout ceiling (seconds)')
         .setDesc(
-          'Maximum total time allowed per page. With streaming enabled, ' + 'the plugin also auto-cancels if no new tokens arrive for 30 seconds. ' + 'You can now safely reduce this to 120-180s. Default: 300s'
+          'Maximum total time allowed per page before the request is cancelled. Separate from the inactivity timeout below.'
         )
         .addSlider((slider) =>
           slider
@@ -227,6 +227,32 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
             .setDynamicTooltip()
             .onChange(async (value) => {
               this.plugin.settings.ollamaTimeoutMs = value * 1000;
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("Inactivity timeout (seconds)")
+        .setDesc("Cancel the Ollama request only if no response chunks arrive for this long. Increase this for cold model starts or large pages.")
+        .addSlider((slider) =>
+          slider
+            .setLimits(30, 300, 15)
+            .setValue(this.plugin.settings.ollamaInactivityTimeoutMs / 1000)
+            .setDynamicTooltip()
+            .onChange(async (value) => {
+              this.plugin.settings.ollamaInactivityTimeoutMs = value * 1000;
+              await this.plugin.saveSettings();
+            })
+        );
+
+      new Setting(containerEl)
+        .setName("Disable inactivity abort")
+        .setDesc("Do not cancel Ollama just because no streamed tokens have arrived yet. Use this for very slow local models or cold starts.")
+        .addToggle((toggle) =>
+          toggle
+            .setValue(this.plugin.settings.disableOllamaInactivityAbort)
+            .onChange(async (value) => {
+              this.plugin.settings.disableOllamaInactivityAbort = value;
               await this.plugin.saveSettings();
             })
         );
@@ -332,7 +358,7 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Render scale')
-      .setDesc('Resolution multiplier for page images. 2.0 recommended. Higher = slower but better quality.')
+      .setDesc('Resolution multiplier for page images. For Ollama, 1.0–1.5 is usually more reliable; higher values are slower and may delay first response.')
       .addSlider((s) =>
         s.setLimits(1.0, 4.0, 0.5)
           .setValue(this.plugin.settings.renderScale)

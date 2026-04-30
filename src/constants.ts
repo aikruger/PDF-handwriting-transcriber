@@ -27,14 +27,16 @@ export const DEFAULT_SETTINGS: PDFTranscriberSettings = {
   ollamaUrl: 'http://localhost:11434',
   ollamaModel: 'llava',
   ollamaTimeoutMs: 300000,
+  ollamaInactivityTimeoutMs: 120000,
+  disableOllamaInactivityAbort: false,
 
   defaultPdfFolder: '',
   maxPages: 50,
   pageStart: 1,
   pageEnd: 0,
   batchSize: 1,
-  renderScale: 2.0,
-  imageQuality: 0.9,
+  renderScale: 1.5,
+  imageQuality: 0.85,
 
   defaultTextPrompt: `Please transcribe all handwritten text from this image. Format it cleanly with proper paragraphs, lists, and line breaks as they appear in the original.`,
 
