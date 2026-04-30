@@ -1,9 +1,12 @@
 import { TranscriptionProvider } from './provider-interface';
 
-interface OllamaGenerateRequest {
+interface OllamaChatRequest {
   model: string;
-  prompt: string;
-  images: string[]; // raw base64 strings — NO "data:..." prefix
+  messages: Array<{
+    role: string;
+    content: string;
+    images: string[];
+  }>;
   stream: boolean;
   options?: {
     temperature?: number;
@@ -11,9 +14,9 @@ interface OllamaGenerateRequest {
   };
 }
 
-interface OllamaGenerateResponse {
+interface OllamaChatResponse {
   model: string;
-  response: string;
+  message: { role: string; content: string };
   done: boolean;
 }
 
@@ -179,10 +182,15 @@ export class OllamaProvider implements TranscriptionProvider {
 
     const compressedImage = await OllamaProvider.compressBase64Image(base64!, 1200);
 
-    const requestBody: OllamaGenerateRequest = {
+    const requestBody: OllamaChatRequest = {
       model: this.model,
-      prompt,
-      images: [compressedImage],
+      messages: [
+        {
+          role: 'user',
+          content: prompt,
+          images: [compressedImage],
+        }
+      ],
       stream: true,
       options: {
         temperature: 0.1,
@@ -206,7 +214,7 @@ export class OllamaProvider implements TranscriptionProvider {
     }, this.timeoutMs);
 
     try {
-      const response = await fetch(`${this.baseUrl}/api/generate`, {
+      const response = await fetch(`${this.baseUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
@@ -263,14 +271,14 @@ export class OllamaProvider implements TranscriptionProvider {
 
         for (const line of lines) {
           try {
-            const parsed = JSON.parse(line) as { response?: string; done?: boolean; error?: string };
+            const parsed = JSON.parse(line) as { message?: { role: string; content: string }; done?: boolean; error?: string };
 
             if (parsed.error) {
               throw new Error(`Ollama model error: ${parsed.error}`);
             }
 
-            if (parsed.response) {
-              fullResponse += parsed.response;
+            if (parsed.message && parsed.message.content) {
+              fullResponse += parsed.message.content;
             }
 
             if (parsed.done) {
