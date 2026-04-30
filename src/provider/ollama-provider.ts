@@ -36,34 +36,92 @@ export class OllamaProvider implements TranscriptionProvider {
     return `Ollama ${this.model}`;
   }
 
+  async listModels(): Promise<string[]> {
+    const response = await fetch(`${this.baseUrl}/api/tags`, {
+      method: 'GET',
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const data = (await response.json()) as OllamaTagsResponse;
+    return (data.models ?? []).map((m) => m.name);
+  }
+
+  /**
+   * Fetch installed models and filter for vision-capable ones.
+   * Returns an object with all models and vision-only models.
+   */
+  async fetchInstalledModels(): Promise<{
+    all: string[];
+    visionLikely: string[];
+  }> {
+    const all = await this.listModels();
+
+    // These model name prefixes are known to support vision input
+    const VISION_PREFIXES = [
+      'llava',
+      'llava-llama3',
+      'llava-phi3',
+      'bakllava',
+      'minicpm-v',
+      'moondream',
+      'llama3.2-vision',
+      'llama3-vision',
+      'phi3-vision',
+      'cogvlm',
+      'internvl',
+      'qwen-vl',
+      'deepseek-vl',
+      'omnivore',
+      'pixtral',
+      'mistral-vision',
+    ];
+
+    const visionLikely = all.filter((name) => {
+      const lower = name.toLowerCase();
+      return VISION_PREFIXES.some((prefix) => lower.startsWith(prefix));
+    });
+
+    return { all, visionLikely };
+  }
+
   async validate(): Promise<void> {
     let models: string[];
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`, {
-        method: 'GET',
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      const data = (await response.json()) as OllamaTagsResponse;
-      models = (data.models ?? []).map((m) => m.name);
+      models = await this.listModels();
     } catch (err) {
       throw new Error(
-        `Cannot connect to Ollama at "${this.baseUrl}". ` +
-          `Make sure Ollama is running (run: ollama serve). ` +
-          `Error: ${(err as Error).message}`
+        `Cannot reach Ollama at "${this.baseUrl}".\n` +
+          'Steps to fix:\n' +
+          '  1. Install Ollama from https://ollama.com\n' +
+          '  2. Run: ollama serve\n' +
+          '  3. Pull a vision model: ollama pull llava\n' +
+          `  4. Verify settings URL is correct (currently: ${this.baseUrl})`
       );
     }
 
-    const baseName = this.model.split(':');
-    const available = models.some((m) => m.startsWith(baseName[0] as string));
-
-    if (!available) {
-      const list = models.join(', ') || 'none installed';
+    if (models.length === 0) {
       throw new Error(
-        `Ollama model "${this.model}" is not installed. ` +
-          `Run: ollama pull ${this.model}\n` +
-          `Currently available: ${list}`
+        'Ollama is running but no models are installed.\n' +
+        'Install a vision model with: ollama pull llava\n' +
+        'Other options: ollama pull minicpm-v  |  ollama pull llama3.2-vision'
+      );
+    }
+
+    const modelName = this.model;
+    const baseName = modelName.split(':')[0].toLowerCase();
+    const isAvailable = models.some(
+      (m) => m.toLowerCase().startsWith(baseName)
+    );
+
+    if (!isAvailable) {
+      const available = models.join(', ');
+      throw new Error(
+        `Model "${modelName}" is not installed.\n` +
+        `To install it, run: ollama pull ${modelName}\n\n` +
+        `Models currently installed: ${available}\n\n` +
+        'Go to Settings → PDF Handwriting Transcriber → click "Refresh models" ' +
+        'to select an installed model.'
       );
     }
   }
@@ -100,11 +158,30 @@ export class OllamaProvider implements TranscriptionProvider {
       });
 
       if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error');
-        throw new Error(
-          `Ollama API error ${response.status}: ${errorText}. ` +
-            `Ensure model "${this.model}" supports vision input.`
-        );
+        let errorBody = '';
+        try {
+          const errJson = await response.json() as { error?: string };
+          errorBody = errJson.error ?? await response.text();
+        } catch {
+          errorBody = await response.text().catch(() => 'Unknown error');
+        }
+
+        if (response.status === 404) {
+          throw new Error(
+            `Model "${this.model}" is not installed in Ollama.\n` +
+            `Run this command in your terminal: ollama pull ${this.model}\n` +
+            `Then retry the transcription.`
+          );
+        }
+
+        if (response.status === 400 && errorBody.toLowerCase().includes('vision')) {
+          throw new Error(
+            `Model "${this.model}" does not support vision/image input.\n` +
+            `Use a vision-capable model such as: llava, minicpm-v, llama3.2-vision, moondream`
+          );
+        }
+
+        throw new Error(`Ollama API error ${response.status}: ${errorBody}`);
       }
 
       const data = (await response.json()) as OllamaGenerateResponse;

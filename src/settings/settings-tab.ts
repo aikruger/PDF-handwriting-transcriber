@@ -79,21 +79,141 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
             })
         );
 
-      new Setting(containerEl)
-        .setName('Model')
+      // Status label element — shows model loading state
+      const modelStatusEl = containerEl.createEl('p', {
+        text: 'Click "Refresh models" to load installed Ollama models.',
+        cls: 'setting-item-description',
+      });
+      modelStatusEl.style.marginBottom = '8px';
+      modelStatusEl.style.color = 'var(--text-muted)';
+
+      // The main model setting
+      const modelSetting = new Setting(containerEl)
+        .setName('Vision model')
         .setDesc(
-          'Must be a vision-capable model. Recommended: llava, minicpm-v, llama3.2-vision. ' +
-            'Pull a model with: ollama pull <model-name>'
-        )
-        .addText((text) =>
-          text
-            .setPlaceholder('llava')
-            .setValue(this.plugin.settings.ollamaModel)
-            .onChange(async (value) => {
+          'Select an installed Ollama model. Only vision-capable models are shown by default. ' +
+          'If your model is missing, type its name manually in the field below.'
+        );
+
+      // Dropdown (populated dynamically)
+      let modelDropdown: any = null;
+      modelSetting.addDropdown((dd) => {
+        modelDropdown = dd;
+        dd.addOption('', '— click Refresh Models —');
+        dd.addOption(this.plugin.settings.ollamaModel, this.plugin.settings.ollamaModel);
+        dd.setValue(this.plugin.settings.ollamaModel);
+        dd.onChange(async (value) => {
+          if (value) {
+            this.plugin.settings.ollamaModel = value;
+            manualInput.setValue(value);
+            await this.plugin.saveSettings();
+          }
+        });
+      });
+
+      // Refresh button
+      modelSetting.addButton((btn) =>
+        btn
+          .setButtonText('Refresh models')
+          .onClick(async () => {
+            btn.setButtonText('Loading...');
+            btn.setDisabled(true);
+            modelStatusEl.style.color = 'var(--text-muted)';
+            modelStatusEl.textContent = '⏳ Fetching installed models from Ollama...';
+
+            try {
+              const { OllamaProvider } = await import('../provider/ollama-provider');
+              const client = new OllamaProvider(
+                this.plugin.settings.ollamaUrl,
+                this.plugin.settings.ollamaModel,
+                10000
+              );
+              const { all, visionLikely } = await client.fetchInstalledModels();
+
+              // Clear and rebuild dropdown options
+              const selectEl = (modelDropdown as any).selectEl as HTMLSelectElement;
+              selectEl.empty();
+
+              if (all.length === 0) {
+                const opt = selectEl.createEl('option', {
+                  text: '— No models installed —',
+                  value: '',
+                });
+                modelStatusEl.textContent =
+                  '⚠️ No models found. Run: ollama pull llava';
+                modelStatusEl.style.color = 'var(--text-warning)';
+              } else {
+                // Vision-capable models first
+                if (visionLikely.length > 0) {
+                  const visionGroup = selectEl.createEl('optgroup', {});
+                  visionGroup.label = `✅ Vision models (${visionLikely.length})`;
+                  visionLikely.forEach((m) => {
+                    visionGroup.createEl('option', { text: m, value: m });
+                  });
+                }
+
+                // All other installed models
+                const otherModels = all.filter((m) => !visionLikely.includes(m));
+                if (otherModels.length > 0) {
+                  const otherGroup = selectEl.createEl('optgroup', {});
+                  otherGroup.label = `⚠️ Other models — may not support vision (${otherModels.length})`;
+                  otherModels.forEach((m) => {
+                    otherGroup.createEl('option', { text: m, value: m });
+                  });
+                }
+
+                // Restore selection
+                const currentModel = this.plugin.settings.ollamaModel;
+                if (all.includes(currentModel)) {
+                  selectEl.value = currentModel;
+                } else if (visionLikely.length > 0) {
+                  selectEl.value = visionLikely[0];
+                  this.plugin.settings.ollamaModel = visionLikely[0];
+                  manualInput.setValue(visionLikely[0]);
+                  await this.plugin.saveSettings();
+                }
+
+                const visionCount = visionLikely.length;
+                const totalCount = all.length;
+                modelStatusEl.textContent =
+                  `✅ Found ${totalCount} model${totalCount !== 1 ? 's' : ''} — ` +
+                  `${visionCount} vision-capable: ${visionLikely.join(', ') || 'none detected'}`;
+                modelStatusEl.style.color = visionCount > 0
+                  ? 'var(--color-green)'
+                  : 'var(--text-warning)';
+              }
+            } catch (err) {
+              modelStatusEl.textContent =
+                `❌ Cannot reach Ollama at ${this.plugin.settings.ollamaUrl}. ` +
+                'Is it running? (ollama serve)';
+              modelStatusEl.style.color = 'var(--text-error)';
+            } finally {
+              btn.setButtonText('Refresh models');
+              btn.setDisabled(false);
+            }
+          })
+      );
+
+      // Manual override text input (always visible below the dropdown)
+      const manualSetting = new Setting(containerEl)
+        .setName('Manual model name override')
+        .setDesc(
+          'Type any model name here to override the dropdown selection above. ' +
+          'Useful if you use a custom or tagged model (e.g. llava:13b, llava:34b).'
+        );
+      let manualInput: any;
+      manualSetting.addText((text) => {
+        manualInput = text;
+        text
+          .setPlaceholder('e.g. llava, minicpm-v, llama3.2-vision')
+          .setValue(this.plugin.settings.ollamaModel)
+          .onChange(async (value) => {
+            if (value.trim()) {
               this.plugin.settings.ollamaModel = value.trim();
               await this.plugin.saveSettings();
-            })
-        );
+            }
+          });
+      });
 
       new Setting(containerEl)
         .setName('Request timeout (seconds)')
@@ -285,5 +405,22 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
     containerEl.createEl('p', {
       text: 'For Ollama: install from https://ollama.com, then run: ollama pull llava',
     }).style.color = 'var(--text-muted)';
+
+    // Auto-load models when settings tab opens (non-blocking)
+    setTimeout(() => {
+      const refreshBtn = containerEl.querySelector(
+        'button'
+      ) as HTMLButtonElement | null;
+      // Find the "Refresh models" button and trigger it automatically
+      const allButtons = Array.from(
+        containerEl.querySelectorAll('button')
+      ) as HTMLButtonElement[];
+      const refreshButton = allButtons.find(
+        (b) => b.textContent?.includes('Refresh models')
+      );
+      if (refreshButton) {
+        refreshButton.click();
+      }
+    }, 300);
   }
 }
