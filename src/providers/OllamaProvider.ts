@@ -1,3 +1,4 @@
+import { localJsonRequest } from '../utils/http';
 import { BaseProvider, TranscriptionRequest, TranscriptionResponse, ModelInfo } from './BaseProvider';
 
 export interface OllamaProviderConfig {
@@ -44,36 +45,38 @@ export class OllamaProvider extends BaseProvider {
     // Strip the data URL prefix to get raw base64
     const base64Image = request.imageDataUrl.replace(/^data:image\/\w+;base64,/, '');
 
-    const response = await fetch(`${this.config.baseUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      const data = await localJsonRequest({
+        url: `${this.config.baseUrl}/api/generate`,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: request.model,
+          prompt: request.prompt,
+          images: [base64Image],  // Ollama vision API format
+          stream: false
+        })
+      });
+      return {
+        text: data.response || 'No transcription returned',
         model: request.model,
-        prompt: request.prompt,
-        images: [base64Image],  // Ollama vision API format
-        stream: false
-      })
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Ollama API Error: ${error || 'Unknown error'}`);
+        provider: this.providerName
+      };
+    } catch (error: any) {
+      const message =
+        error?.message ||
+        error?.status ||
+        "Unknown Ollama request error";
+      throw new Error(`Ollama API Error: ${message}`);
     }
-
-    const data = await response.json();
-    return {
-      text: data.response || 'No transcription returned',
-      model: request.model,
-      provider: this.providerName
-    };
   }
 
   async fetchModels(): Promise<ModelInfo[]> {
     try {
-      const response = await fetch(`${this.config.baseUrl}/api/tags`);
-      if (!response.ok) return OLLAMA_VISION_MODELS; // fallback to known list
-
-      const data = await response.json();
+      const data = await localJsonRequest({
+        url: `${this.config.baseUrl}/api/tags`,
+        method: "GET"
+      });
       const installedModels: ModelInfo[] = data.models
         ?.filter((m: any) => {
           // Only show models that are likely vision-capable

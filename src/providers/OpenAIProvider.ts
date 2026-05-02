@@ -1,3 +1,4 @@
+import { remoteJsonRequest } from '../utils/http';
 import { BaseProvider, TranscriptionRequest, TranscriptionResponse, ModelInfo } from './BaseProvider';
 
 export interface OpenAIProviderConfig {
@@ -31,50 +32,53 @@ export class OpenAIProvider extends BaseProvider {
       throw new Error(this.getConfigurationStatus());
     }
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}`
-      },
-      body: JSON.stringify({
+    try {
+      const data = await remoteJsonRequest({
+        url: "https://api.openai.com/v1/chat/completions",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.config.apiKey}`
+        },
+        body: JSON.stringify({
+          model: request.model,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: request.prompt },
+                { type: "image_url", image_url: { url: request.imageDataUrl } }
+              ]
+            }
+          ],
+          max_tokens: request.maxTokens ?? 4096
+        })
+      });
+      return {
+        text: data?.choices?.[0]?.message?.content || "No transcription returned",
         model: request.model,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: request.prompt },
-            { type: 'image_url', image_url: { url: request.imageDataUrl } }
-          ]
-        }],
-        max_tokens: request.maxTokens ?? 4096
-      })
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(`OpenAI API Error: ${error.error?.message || 'Unknown error'}`);
+        provider: this.providerName
+      };
+    } catch (error: any) {
+      const message =
+        error?.message ||
+        error?.status ||
+        "Unknown OpenAI request error";
+      throw new Error(`OpenAI API Error: ${message}`);
     }
-
-    const data = await response.json();
-    return {
-      text: data.choices[0]?.message?.content || 'No transcription returned',
-      model: request.model,
-      provider: this.providerName
-    };
   }
 
   async fetchModels(): Promise<ModelInfo[]> {
     if (!this.config.apiKey) return this.getDefaultModels();
 
     try {
-      const response = await fetch('https://api.openai.com/v1/models', {
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${this.config.apiKey}` }
+      const data = await remoteJsonRequest({
+        url: "https://api.openai.com/v1/models",
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${this.config.apiKey}`
+        }
       });
-
-      if (!response.ok) throw new Error('Failed to fetch models');
-
-      const data = await response.json();
 
       // Filter for vision-capable models — preserve existing logic exactly
       const visionModels = data.data

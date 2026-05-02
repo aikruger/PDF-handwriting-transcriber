@@ -1,4 +1,5 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
+import { remoteJsonRequest } from './utils/http';
 
 export interface PluginSettings {
   // ===== PROVIDER SETTINGS (NEW) =====
@@ -163,11 +164,14 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
         .addButton((button) =>
           button.setButtonText('Test Connection').onClick(async () => {
             try {
-              const response = await fetch(`${this.plugin.settings.ollamaBaseUrl}/api/tags`);
-              if (response.ok) {
+              const data = await remoteJsonRequest({
+                url: `${this.plugin.settings.ollamaBaseUrl}/api/tags`,
+                method: "GET"
+              });
+              if (data) {
                 new Notice('Successfully connected to Ollama!');
               } else {
-                new Notice(`Connected to Ollama, but got error: ${response.status}`);
+                new Notice(`Connected to Ollama, but got empty response`);
               }
             } catch (e: any) {
               new Notice(`Failed to connect to Ollama: ${e.message}`);
