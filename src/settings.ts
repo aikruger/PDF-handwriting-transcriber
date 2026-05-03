@@ -1,20 +1,29 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
-import { remoteJsonRequest } from './utils/http';
+// import { remoteJsonRequest } from './utils/http';
+
+export interface StoredModelInfo {
+  id: string;
+  displayName: string;
+  supportsVision: boolean;
+  recommended?: boolean;
+  tested?: boolean;
+  testStatus?: 'passed' | 'failed' | 'untested';
+  score?: number;
+  reason?: string;
+  provider?: string;
+}
 
 export interface PluginSettings {
-  // ===== PROVIDER SETTINGS (NEW) =====
-  activeProvider: 'openai' | 'ollama';  // Which provider is active
-  enableOllama: boolean;                 // Feature flag — false by default, hides Ollama from UI
+  activeProvider: 'openai' | 'ollama';
+  enableOllama: boolean;
 
-  // ===== OPENAI SETTINGS (unchanged from original) =====
   apiKey: string;
   selectedModel: string;
-  availableModels: string[];
+  availableModels: StoredModelInfo[];
 
-  // ===== OLLAMA SETTINGS (NEW) =====
   ollamaBaseUrl: string;
   ollamaSelectedModel: string;
-  ollamaAvailableModels: string[];
+  ollamaAvailableModels: StoredModelInfo[];
 
   // ===== PDF PROCESSING SETTINGS (unchanged from original) =====
   defaultPdfFolder: string;
@@ -32,22 +41,32 @@ export interface PluginSettings {
   detectDiagrams: boolean;
   useMermaid: boolean;
   contentMode: 'text' | 'diagram' | 'mixed';
+
+  providerConnectionStatus: Record<string, 'unknown' | 'passed' | 'failed'>;
+  providerConnectionMessage: Record<string, string>;
+  providerModelProbeStatus: Record<string, 'unknown' | 'running' | 'complete' | 'failed'>;
+  recommendedModels: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {
-  // Provider
   activeProvider: 'openai',
   enableOllama: false,
 
-  // OpenAI — preserve original defaults exactly
   apiKey: '',
-  selectedModel: 'gpt-4-vision',
-  availableModels: ['gpt-4-vision', 'gpt-4o', 'gpt-4-turbo'],
+  selectedModel: 'gpt-4.1',
+  availableModels: [
+    { id: 'gpt-4.1', displayName: 'gpt-4.1', supportsVision: true, provider: 'openai', recommended: true, testStatus: 'untested', score: 100 },
+    { id: 'gpt-4o', displayName: 'gpt-4o', supportsVision: true, provider: 'openai', recommended: false, testStatus: 'untested', score: 90 },
+    { id: 'gpt-4-turbo', displayName: 'gpt-4-turbo', supportsVision: true, provider: 'openai', recommended: false, testStatus: 'untested', score: 75 }
+  ],
 
-  // Ollama
   ollamaBaseUrl: 'http://localhost:11434',
   ollamaSelectedModel: 'llava',
-  ollamaAvailableModels: ['llava', 'llava:13b', 'bakllava'],
+  ollamaAvailableModels: [
+    { id: 'llava', displayName: 'llava', supportsVision: true, provider: 'ollama', recommended: true, testStatus: 'untested', score: 100 },
+    { id: 'llava:13b', displayName: 'llava:13b', supportsVision: true, provider: 'ollama', recommended: false, testStatus: 'untested', score: 95 },
+    { id: 'bakllava', displayName: 'bakllava', supportsVision: true, provider: 'ollama', recommended: false, testStatus: 'untested', score: 85 }
+  ],
 
   // PDF processing — preserve original defaults exactly
   defaultPdfFolder: '',
@@ -64,7 +83,24 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   defaultMixedPrompt: "This image may contain both handwritten text and diagrams/drawings. Please:\n\n1. Transcribe all handwritten text accurately, maintaining paragraphs and formatting.\n\n2. For any diagrams or drawings, convert them to mermaid syntax. Wrap the mermaid code in triple backticks with 'mermaid' label.\n\nEnsure you maintain the logical flow of the document, placing the mermaid diagrams in the appropriate locations relative to the text.",
   detectDiagrams: true,
   useMermaid: true,
-  contentMode: 'mixed'
+  contentMode: 'mixed',
+
+  providerConnectionStatus: {
+    openai: 'unknown',
+    ollama: 'unknown'
+  },
+  providerConnectionMessage: {
+    openai: '',
+    ollama: ''
+  },
+  providerModelProbeStatus: {
+    openai: 'unknown',
+    ollama: 'unknown'
+  },
+  recommendedModels: {
+    openai: 'gpt-4.1',
+    ollama: 'llava'
+  }
 };
 
 export class PDFTranscriberSettingTab extends PluginSettingTab {
@@ -135,8 +171,13 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
         .setName('Ollama Model')
         .setDesc('Select an installed vision-capable Ollama model.')
         .addDropdown((dropdown) => {
-          this.plugin.settings.ollamaAvailableModels.forEach((model: string) => {
-            dropdown.addOption(model, model);
+          this.plugin.settings.ollamaAvailableModels.forEach((model: StoredModelInfo) => {
+            let label = model.displayName;
+            if (model.recommended) label += ' — Recommended';
+            else if (model.testStatus === 'passed') label += ' — Compatible';
+            else if (model.testStatus === 'failed') label += ' — Failed probe';
+
+            dropdown.addOption(model.id, label);
           });
           dropdown.setValue(this.plugin.settings.ollamaSelectedModel)
             .onChange(async (value) => {
@@ -146,38 +187,40 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
         });
 
       new Setting(containerEl)
-        .setName('Refresh Ollama Models')
-        .setDesc('Fetch the list of installed vision models from your Ollama instance.')
-        .addButton((button) =>
-          button.setButtonText('Refresh Models').onClick(async () => {
-            const success = await this.plugin.fetchAvailableModels();
-            if (success) {
-              new Notice('Ollama models refreshed successfully');
-              this.display();
-            }
-          })
-        );
-
-      new Setting(containerEl)
         .setName('Test Connection')
         .setDesc('Verify that Obsidian can connect to your local Ollama instance.')
         .addButton((button) =>
           button.setButtonText('Test Connection').onClick(async () => {
-            try {
-              const data = await remoteJsonRequest({
-                url: `${this.plugin.settings.ollamaBaseUrl}/api/tags`,
-                method: "GET"
-              });
-              if (data) {
-                new Notice('Successfully connected to Ollama!');
-              } else {
-                new Notice(`Connected to Ollama, but got empty response`);
-              }
-            } catch (e: any) {
-              new Notice(`Failed to connect to Ollama: ${e.message}`);
-            }
+            await this.plugin.testProviderConnection('ollama');
+            this.display();
           })
         );
+
+      new Setting(containerEl)
+        .setName('Refresh & Recommend')
+        .setDesc('Fetch installed vision models from your Ollama instance and test their compatibility.')
+        .addButton((button) =>
+          button.setButtonText('Refresh & Recommend').onClick(async () => {
+            const ok = await this.plugin.testProviderConnection('ollama');
+            if (ok) {
+              await this.plugin.refreshAndRecommendModels('ollama');
+            }
+            this.display();
+          })
+        );
+
+      if (this.plugin.settings.providerConnectionMessage.ollama) {
+        containerEl.createEl('p', {
+          text: `Status: ${this.plugin.settings.providerConnectionMessage.ollama}`,
+          cls: 'setting-item-description'
+        });
+      }
+      if (this.plugin.settings.providerModelProbeStatus.ollama !== 'unknown') {
+        containerEl.createEl('p', {
+          text: `Probe Status: ${this.plugin.settings.providerModelProbeStatus.ollama}`,
+          cls: 'setting-item-description'
+        });
+      }
     }
 
     // === Section 2: API Settings ===
@@ -201,8 +244,13 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
         .setName('OpenAI Model')
         .setDesc('Select the model to use for transcription.')
         .addDropdown((dropdown) => {
-          this.plugin.settings.availableModels.forEach((model: string) => {
-            dropdown.addOption(model, model);
+          this.plugin.settings.availableModels.forEach((model: StoredModelInfo) => {
+            let label = model.displayName;
+            if (model.recommended) label += ' — Recommended';
+            else if (model.testStatus === 'passed') label += ' — Compatible';
+            else if (model.testStatus === 'failed') label += ' — Failed probe';
+
+            dropdown.addOption(model.id, label);
           });
           dropdown.setValue(this.plugin.settings.selectedModel)
             .onChange(async (value) => {
@@ -212,21 +260,44 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
         });
 
       new Setting(containerEl)
-        .setName('Refresh OpenAI Models')
-        .setDesc('Fetch the latest available models from OpenAI.')
+        .setName('Test Connection')
+        .setDesc('Verify that Obsidian can connect to OpenAI.')
         .addButton((button) =>
-          button.setButtonText('Refresh Models').onClick(async () => {
+          button.setButtonText('Test Connection').onClick(async () => {
+            await this.plugin.testProviderConnection('openai');
+            this.display();
+          })
+        );
+
+      new Setting(containerEl)
+        .setName('Refresh & Recommend Models')
+        .setDesc('Fetch the latest available models from OpenAI and recommend the best compatible model.')
+        .addButton((button) =>
+          button.setButtonText('Refresh & Recommend').onClick(async () => {
             if (!this.plugin.settings.apiKey) {
               new Notice('Please enter an API key first');
               return;
             }
-            const success = await this.plugin.fetchAvailableModels();
-            if (success) {
-              new Notice('OpenAI models refreshed successfully');
-              this.display();
+            const ok = await this.plugin.testProviderConnection('openai');
+            if (ok) {
+              await this.plugin.refreshAndRecommendModels('openai');
             }
+            this.display();
           })
         );
+
+      if (this.plugin.settings.providerConnectionMessage.openai) {
+        containerEl.createEl('p', {
+          text: `Status: ${this.plugin.settings.providerConnectionMessage.openai}`,
+          cls: 'setting-item-description'
+        });
+      }
+      if (this.plugin.settings.providerModelProbeStatus.openai !== 'unknown') {
+        containerEl.createEl('p', {
+          text: `Probe Status: ${this.plugin.settings.providerModelProbeStatus.openai}`,
+          cls: 'setting-item-description'
+        });
+      }
     }
 
     // === Section 3: PDF Processing ===

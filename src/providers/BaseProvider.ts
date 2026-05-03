@@ -12,9 +12,27 @@ export interface TranscriptionResponse {
 }
 
 export interface ModelInfo {
-  id: string;             // Model identifier used in API calls
-  displayName: string;    // Human-readable name shown in settings dropdown
-  supportsVision: boolean; // Whether this model can process images
+  id: string;
+  displayName: string;
+  supportsVision: boolean;
+  recommended?: boolean;
+  tested?: boolean;
+  testStatus?: 'passed' | 'failed' | 'untested';
+  score?: number;
+  reason?: string;
+  provider?: string;
+}
+
+export interface ProviderConnectionResult {
+  ok: boolean;
+  message: string;
+  statusCode?: number;
+}
+
+export interface ModelProbeResult {
+  ok: boolean;
+  model: string;
+  reason?: string;
 }
 
 export abstract class BaseProvider {
@@ -32,4 +50,27 @@ export abstract class BaseProvider {
 
   // Return a human-readable string explaining what configuration is missing
   abstract getConfigurationStatus(): string;
+
+  async testConnection(): Promise<ProviderConnectionResult> {
+    return {
+      ok: this.isConfigured(),
+      message: this.isConfigured() ? 'Configured' : this.getConfigurationStatus()
+    };
+  }
+
+  async probeModelCompatibility(_model: string): Promise<ModelProbeResult> {
+    return {
+      ok: false,
+      model: _model,
+      reason: 'Model probing not implemented for this provider'
+    };
+  }
+
+  supportsConnectionTest(): boolean {
+    return true;
+  }
+
+  supportsModelProbe(): boolean {
+    return true;
+  }
 }

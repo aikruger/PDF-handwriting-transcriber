@@ -12,6 +12,10 @@ export default class PDFTranscriberPlugin extends Plugin {
   private openaiProvider!: OpenAIProvider;
   private ollamaProvider!: OllamaProvider;
 
+  getProviderByName(providerName: 'openai' | 'ollama'): BaseProvider {
+    return providerName === 'ollama' ? this.ollamaProvider : this.openaiProvider;
+  }
+
   // Returns the currently active provider based on settings
   get activeProvider(): BaseProvider {
     if (this.settings.activeProvider === 'ollama' && this.settings.enableOllama) {
@@ -52,7 +56,62 @@ export default class PDFTranscriberPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const loaded = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+
+    if (Array.isArray(loaded.availableModels) && typeof loaded.availableModels[0] === 'string') {
+      loaded.availableModels = loaded.availableModels.map((id: string) => ({
+        id,
+        displayName: id,
+        supportsVision: true,
+        provider: 'openai',
+        recommended: false,
+        tested: false,
+        testStatus: 'untested',
+        score: this.providerModelScoreFallback('openai', id)
+      }));
+    }
+
+    if (Array.isArray(loaded.ollamaAvailableModels) && typeof loaded.ollamaAvailableModels[0] === 'string') {
+      loaded.ollamaAvailableModels = loaded.ollamaAvailableModels.map((id: string) => ({
+        id,
+        displayName: id,
+        supportsVision: true,
+        provider: 'ollama',
+        recommended: false,
+        tested: false,
+        testStatus: 'untested',
+        score: this.providerModelScoreFallback('ollama', id)
+      }));
+    }
+
+    this.settings = loaded;
+  }
+
+  private providerModelScoreFallback(provider: string, id: string): number {
+    const model = id.toLowerCase();
+
+    if (provider === 'openai') {
+      if (model === 'gpt-4.1') return 100;
+      if (model.startsWith('gpt-4.1')) return 95;
+      if (model === 'gpt-4o') return 90;
+      if (model.startsWith('gpt-4o')) return 85;
+      if (model === 'gpt-4-turbo') return 75;
+      if (model.startsWith('gpt-4')) return 60;
+      return 0;
+    }
+
+    if (provider === 'ollama') {
+      if (model === 'llava') return 100;
+      if (model.startsWith('llava:13b')) return 95;
+      if (model.startsWith('llava:34b')) return 90;
+      if (model.startsWith('bakllava')) return 85;
+      if (model.startsWith('llava-phi3')) return 80;
+      if (model.startsWith('moondream')) return 75;
+      if (model.includes('vision')) return 60;
+      return 0;
+    }
+
+    return 0;
   }
 
   async saveSettings() {
@@ -68,31 +127,141 @@ export default class PDFTranscriberPlugin extends Plugin {
     });
   }
 
-  async fetchAvailableModels(): Promise<boolean> {
-    // Preserve original method — delegates to active provider
-    const provider = this.activeProvider;
-    if (!provider.isConfigured() && provider.providerName === 'openai') {
-      new Notice('API key required to fetch models');
+  // @ts-ignore
+  private getModelsForProvider(providerName: string) {
+    return providerName === 'ollama'
+      ? this.settings.ollamaAvailableModels
+      : this.settings.availableModels;
+  }
+
+  private setModelsForProvider(providerName: string, models: any[]) {
+    if (providerName === 'ollama') {
+      this.settings.ollamaAvailableModels = models;
+    } else {
+      this.settings.availableModels = models;
+    }
+  }
+
+  private getSelectedModelForProvider(providerName: string): string {
+    return providerName === 'ollama'
+      ? this.settings.ollamaSelectedModel
+      : this.settings.selectedModel;
+  }
+
+  private setSelectedModelForProvider(providerName: string, model: string) {
+    if (providerName === 'ollama') {
+      this.settings.ollamaSelectedModel = model;
+    } else {
+      this.settings.selectedModel = model;
+    }
+  }
+
+  async testProviderConnection(providerName: 'openai' | 'ollama'): Promise<boolean> {
+    const provider = this.getProviderByName(providerName);
+
+    try {
+      const result = await provider.testConnection();
+
+      this.settings.providerConnectionStatus[providerName] = result.ok ? 'passed' : 'failed';
+      this.settings.providerConnectionMessage[providerName] = result.message;
+      await this.saveSettings();
+
+      new Notice(result.message);
+      return result.ok;
+    } catch (error: any) {
+      this.settings.providerConnectionStatus[providerName] = 'failed';
+      this.settings.providerConnectionMessage[providerName] =
+        error?.message || `Connection test failed for ${provider.displayName}`;
+      await this.saveSettings();
+
+      new Notice(this.settings.providerConnectionMessage[providerName]);
+      return false;
+    }
+  }
+
+  async refreshAndRecommendModels(providerName: 'openai' | 'ollama'): Promise<boolean> {
+    const provider = this.getProviderByName(providerName);
+
+    if (!provider.isConfigured()) {
+      new Notice(provider.getConfigurationStatus());
       return false;
     }
 
+    this.settings.providerModelProbeStatus[providerName] = 'running';
+    await this.saveSettings();
+
     try {
-      const models = await provider.fetchModels();
-      if (models.length > 0) {
-        if (provider.providerName === 'openai') {
-          this.settings.availableModels = models.map(m => m.id);
-        } else {
-          this.settings.ollamaAvailableModels = models.map(m => m.id);
+      const fetchedModels = await provider.fetchModels();
+      const topCandidates = [...fetchedModels]
+        .sort((a, b) => (b.score || 0) - (a.score || 0))
+        .slice(0, 5);
+
+      const probeResults: any[] = [];
+      if (provider.supportsModelProbe()) {
+        for (const model of topCandidates) {
+          const probe = await provider.probeModelCompatibility(model.id);
+          probeResults.push(probe);
         }
-        await this.saveSettings();
-        return true;
       }
-      new Notice('No vision models found, using defaults');
-      return false;
+
+      const bestModel = this.pickBestRecommendedModel(fetchedModels, probeResults);
+
+      const mergedModels = fetchedModels
+        .map((model) => {
+          const probe = probeResults.find((p) => p.model === model.id);
+          const passed = probe?.ok === true;
+
+          return {
+            ...model,
+            tested: !!probe,
+            testStatus: probe ? (passed ? 'passed' : 'failed') : 'untested',
+            recommended: model.id === bestModel,
+            reason: probe?.reason
+          };
+        })
+        .sort((a, b) => {
+          const aRank = a.recommended ? 1000 : a.testStatus === 'passed' ? 500 : 0;
+          const bRank = b.recommended ? 1000 : b.testStatus === 'passed' ? 500 : 0;
+          return (bRank + (b.score || 0)) - (aRank + (a.score || 0));
+        });
+
+      this.setModelsForProvider(providerName, mergedModels);
+      this.settings.providerModelProbeStatus[providerName] = 'complete';
+      this.settings.recommendedModels[providerName] = bestModel;
+
+      const currentSelected = this.getSelectedModelForProvider(providerName);
+      const selectedStillValid = mergedModels.some(
+        (m) => m.id === currentSelected && m.testStatus !== 'failed'
+      );
+
+      if (!selectedStillValid && bestModel) {
+        this.setSelectedModelForProvider(providerName, bestModel);
+      }
+
+      await this.saveSettings();
+      new Notice(`${provider.displayName} models refreshed. Recommended: ${bestModel}`);
+      return true;
     } catch (error: any) {
-      new Notice(`Failed to fetch models: ${error.message}`);
+      this.settings.providerModelProbeStatus[providerName] = 'failed';
+      await this.saveSettings();
+
+      new Notice(`Failed to refresh ${provider.displayName} models: ${error?.message || 'Unknown error'}`);
       return false;
     }
+  }
+
+  private pickBestRecommendedModel(
+    models: { id: string; score?: number }[],
+    probes: { model: string; ok: boolean }[]
+  ): string {
+    const passed = models
+      .filter((m) => probes.some((p) => p.model === m.id && p.ok))
+      .sort((a, b) => (b.score || 0) - (a.score || 0));
+
+    if (passed.length > 0) return passed[0].id;
+
+    const sorted = [...models].sort((a, b) => (b.score || 0) - (a.score || 0));
+    return sorted[0]?.id || '';
   }
 
   async transcribePDF(pdfPath: string, editor: any, customOptions: any = {}) {

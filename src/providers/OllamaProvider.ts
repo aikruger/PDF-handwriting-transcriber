@@ -1,5 +1,8 @@
 import { localJsonRequest } from '../utils/http';
-import { BaseProvider, TranscriptionRequest, TranscriptionResponse, ModelInfo } from './BaseProvider';
+import { BaseProvider, TranscriptionRequest, TranscriptionResponse, ModelInfo, ProviderConnectionResult, ModelProbeResult } from './BaseProvider';
+
+const TINY_TEST_IMAGE =
+  'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolHRUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGy0lICYtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAoACgMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFhABAQEAAAAAAAAAAAAAAAAAAAER/9oACAEBAAEFAjJbN//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8BP//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8BP//Z';
 
 export interface OllamaProviderConfig {
   baseUrl: string;        // Default: 'http://localhost:11434'
@@ -34,6 +37,63 @@ export class OllamaProvider extends BaseProvider {
     if (!this.config.baseUrl) return 'Ollama base URL is not set.';
     if (!this.config.selectedModel) return 'No Ollama model selected.';
     return 'Configured (ensure Ollama is running locally)';
+  }
+
+  // @ts-ignore
+  private scoreModelId(id: string): number {
+    const model = id.toLowerCase();
+    if (model === 'llava') return 100;
+    if (model.startsWith('llava:13b')) return 95;
+    if (model.startsWith('llava:34b')) return 90;
+    if (model.startsWith('bakllava')) return 85;
+    if (model.startsWith('llava-phi3')) return 80;
+    if (model.startsWith('moondream')) return 75;
+    if (model.includes('vision')) return 60;
+    return 0;
+  }
+
+  async testConnection(): Promise<ProviderConnectionResult> {
+    if (!this.config.baseUrl) {
+      return { ok: false, message: 'Ollama base URL is not set' };
+    }
+
+    try {
+      const data = await localJsonRequest({
+        url: `${this.config.baseUrl}/api/tags`,
+        method: 'GET'
+      });
+
+      const count = Array.isArray(data?.models) ? data.models.length : 0;
+      return {
+        ok: true,
+        message: `Successfully connected to Ollama (${count} models found)`
+      };
+    } catch (error: any) {
+      return {
+        ok: false,
+        message: error?.message || 'Failed to connect to Ollama',
+        statusCode: error?.status
+      };
+    }
+  }
+
+  async probeModelCompatibility(model: string): Promise<ModelProbeResult> {
+    try {
+      await this.transcribe({
+        model,
+        prompt: 'Reply only with the word OK.',
+        imageDataUrl: TINY_TEST_IMAGE,
+        maxTokens: 5
+      });
+
+      return { ok: true, model };
+    } catch (error: any) {
+      return {
+        ok: false,
+        model,
+        reason: error?.message || 'Compatibility probe failed'
+      };
+    }
   }
 
   async transcribe(request: TranscriptionRequest): Promise<TranscriptionResponse> {

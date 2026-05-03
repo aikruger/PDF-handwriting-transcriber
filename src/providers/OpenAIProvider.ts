@@ -1,5 +1,14 @@
 import { remoteJsonRequest } from '../utils/http';
-import { BaseProvider, TranscriptionRequest, TranscriptionResponse, ModelInfo } from './BaseProvider';
+import { BaseProvider, TranscriptionRequest, TranscriptionResponse, ModelInfo, ProviderConnectionResult, ModelProbeResult } from './BaseProvider';
+
+const OPENAI_FALLBACK_MODELS: ModelInfo[] = [
+  { id: 'gpt-4.1', displayName: 'gpt-4.1', supportsVision: true, provider: 'openai', testStatus: 'untested' },
+  { id: 'gpt-4o', displayName: 'gpt-4o', supportsVision: true, provider: 'openai', testStatus: 'untested' },
+  { id: 'gpt-4-turbo', displayName: 'gpt-4-turbo', supportsVision: true, provider: 'openai', testStatus: 'untested' }
+];
+
+const TINY_TEST_IMAGE =
+  'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolHRUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGy0lICYtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAoACgMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFhABAQEAAAAAAAAAAAAAAAAAAAER/9oACAEBAAEFAjJbN//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8BP//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8BP//Z';
 
 export interface OpenAIProviderConfig {
   apiKey: string;
@@ -25,6 +34,69 @@ export class OpenAIProvider extends BaseProvider {
     if (!this.config.apiKey) return 'OpenAI API key is not set. Go to Settings → PDF Transcriber.';
     if (!this.config.apiKey.startsWith('sk-')) return 'OpenAI API key appears invalid (should start with sk-).';
     return 'Configured';
+  }
+
+  private scoreModelId(id: string): number {
+    const model = id.toLowerCase();
+    if (model === 'gpt-4.1') return 100;
+    if (model.startsWith('gpt-4.1')) return 95;
+    if (model === 'gpt-4o') return 90;
+    if (model.startsWith('gpt-4o')) return 85;
+    if (model === 'gpt-4-turbo') return 75;
+    if (model.startsWith('gpt-4')) return 60;
+    return 0;
+  }
+
+  private isLikelySupportedVisionModel(id: string): boolean {
+    const model = id.toLowerCase();
+    return model.startsWith('gpt-4.1') || model.startsWith('gpt-4o') || model.startsWith('gpt-4');
+  }
+
+  async testConnection(): Promise<ProviderConnectionResult> {
+    if (!this.config.apiKey) {
+      return { ok: false, message: 'OpenAI API key is not set' };
+    }
+
+    if (!this.config.apiKey.startsWith('sk-')) {
+      return { ok: false, message: 'OpenAI API key appears invalid (should start with sk-)' };
+    }
+
+    try {
+      await remoteJsonRequest({
+        url: 'https://api.openai.com/v1/models',
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${this.config.apiKey}`
+        }
+      });
+
+      return { ok: true, message: 'Successfully connected to OpenAI' };
+    } catch (error: any) {
+      return {
+        ok: false,
+        message: error?.message || 'Failed to connect to OpenAI',
+        statusCode: error?.status
+      };
+    }
+  }
+
+  async probeModelCompatibility(model: string): Promise<ModelProbeResult> {
+    try {
+      await this.transcribe({
+        model,
+        prompt: 'Reply only with the word OK.',
+        imageDataUrl: TINY_TEST_IMAGE,
+        maxTokens: 5
+      });
+
+      return { ok: true, model };
+    } catch (error: any) {
+      return {
+        ok: false,
+        model,
+        reason: error?.message || 'Compatibility probe failed'
+      };
+    }
   }
 
   async transcribe(request: TranscriptionRequest): Promise<TranscriptionResponse> {
@@ -73,39 +145,39 @@ export class OpenAIProvider extends BaseProvider {
 
     try {
       const data = await remoteJsonRequest({
-        url: "https://api.openai.com/v1/models",
-        method: "GET",
+        url: 'https://api.openai.com/v1/models',
+        method: 'GET',
         headers: {
-          "Authorization": `Bearer ${this.config.apiKey}`
+          Authorization: `Bearer ${this.config.apiKey}`
         }
       });
 
-      // Filter for vision-capable models — preserve existing logic exactly
-      const visionModels = data.data
-        .filter((model: any) =>
-          model.id.includes('vision') ||
-          model.id.includes('gpt-4') ||
-          model.id.includes('gpt-4o')
-        )
-        .map((model: any): ModelInfo => ({
+      const models: ModelInfo[] = (data.data || [])
+        .filter((model: any) => this.isLikelySupportedVisionModel(model.id))
+        .map((model: any) => ({
           id: model.id,
           displayName: model.id,
-          supportsVision: true
-        }));
+          supportsVision: true,
+          provider: this.providerName,
+          tested: false,
+          testStatus: 'untested',
+          score: this.scoreModelId(model.id),
+          recommended: false
+        }))
+        .sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
 
-      return visionModels.length > 0 ? visionModels : this.getDefaultModels();
-    } catch (error) {
+      return models.length > 0 ? models : this.getDefaultModels();
+    } catch {
       return this.getDefaultModels();
     }
   }
 
-  // Preserve original hardcoded fallback models exactly
   getDefaultModels(): ModelInfo[] {
-    return [
-      { id: 'gpt-4-vision', displayName: 'GPT-4 Vision', supportsVision: true },
-      { id: 'gpt-4o', displayName: 'GPT-4o', supportsVision: true },
-      { id: 'gpt-4-turbo', displayName: 'GPT-4 Turbo', supportsVision: true }
-    ];
+    return OPENAI_FALLBACK_MODELS.map((m, index) => ({
+      ...m,
+      recommended: index === 0,
+      score: this.scoreModelId(m.id)
+    }));
   }
 
   // Allow settings to update the config without reinstantiating
