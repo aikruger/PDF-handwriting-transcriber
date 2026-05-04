@@ -46,6 +46,7 @@ export interface PluginSettings {
   providerConnectionMessage: Record<string, string>;
   providerModelProbeStatus: Record<string, 'unknown' | 'running' | 'complete' | 'failed'>;
   recommendedModels: Record<string, string>;
+  ollamaRecommendedDownload: null | { id: string; reason: string };
 }
 
 export const DEFAULT_SETTINGS: PluginSettings = {
@@ -78,9 +79,41 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   imageQuality: 0.9,
 
   // Prompts — preserve original defaults exactly
-  defaultTextPrompt: "Please transcribe all handwritten text from this image. Format it cleanly with proper paragraphs, lists, and line breaks as they appear in the original.",
-  defaultDiagramPrompt: "This image contains a diagram or drawing. Please analyze it carefully and convert it to a mermaid diagram. Use the appropriate mermaid syntax based on the type of diagram (flowchart, sequence diagram, etc.). Focus on capturing the structure, relationships, and any text labels.",
-  defaultMixedPrompt: "This image may contain both handwritten text and diagrams/drawings. Please:\n\n1. Transcribe all handwritten text accurately, maintaining paragraphs and formatting.\n\n2. For any diagrams or drawings, convert them to mermaid syntax. Wrap the mermaid code in triple backticks with 'mermaid' label.\n\nEnsure you maintain the logical flow of the document, placing the mermaid diagrams in the appropriate locations relative to the text.",
+  defaultTextPrompt: `You are a precise handwriting transcription assistant. Your ONLY task is to transcribe the exact handwritten text visible in this image.
+
+STRICT RULES:
+- Transcribe ONLY what is physically written — do not add, infer, complete, or embellish
+- If a word is illegible, write [illegible] rather than guessing
+- Preserve the original line breaks and paragraph structure
+- Do not describe the image, paper, pen, or writing style
+- Do not add headings, summaries, or commentary
+- If the page is blank or has no handwriting, reply only with: [No handwritten content detected]
+
+Begin transcription now:`,
+
+  defaultDiagramPrompt: `You are a diagram analysis assistant. Convert the diagram or drawing in this image into Mermaid syntax.
+
+STRICT RULES:
+- Only describe what is visibly present in the diagram — do not add nodes, arrows, or labels that are not shown
+- Use the correct Mermaid diagram type: flowchart, sequenceDiagram, classDiagram, stateDiagram, erDiagram, or mindmap
+- If labels are handwritten and illegible, use [illegible] as the label text
+- Do not describe the drawing style or medium
+- If no diagram is present, reply only with: [No diagram detected]
+
+Output Mermaid syntax now:`,
+
+  defaultMixedPrompt: `You are a precise document transcription assistant. This image may contain handwritten text, diagrams, or both.
+
+STRICT RULES:
+- Transcribe ALL handwritten text exactly as written — do not add, infer, complete, or embellish
+- If a word is illegible, write [illegible]
+- Convert any diagrams or drawings to Mermaid syntax, wrapped in triple backticks with the mermaid label
+- Do not describe the page, paper, or writing instrument
+- Preserve the logical reading order and spatial layout
+- If the page is blank, reply only with: [No content detected]
+
+Process this document now:`,
+
   detectDiagrams: true,
   useMermaid: true,
   contentMode: 'mixed',
@@ -100,7 +133,8 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   recommendedModels: {
     openai: 'gpt-4.1',
     ollama: 'llava'
-  }
+  },
+  ollamaRecommendedDownload: null
 };
 
 export class PDFTranscriberSettingTab extends PluginSettingTab {
@@ -219,6 +253,26 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
         containerEl.createEl('p', {
           text: `Probe Status: ${this.plugin.settings.providerModelProbeStatus.ollama}`,
           cls: 'setting-item-description'
+        });
+      }
+
+      const betterModel = this.plugin.settings.ollamaRecommendedDownload;
+      if (betterModel) {
+        const downloadEl = containerEl.createEl('div');
+        downloadEl.style.padding = '10px';
+        downloadEl.style.marginTop = '8px';
+        downloadEl.style.backgroundColor = 'var(--background-secondary)';
+        downloadEl.style.borderRadius = '6px';
+        downloadEl.style.border = '1px solid var(--background-modifier-border)';
+
+        downloadEl.createEl('p', {
+          text: `💡 Better model available: ${betterModel.id} — ${betterModel.reason}`
+        });
+
+        const dlButton = downloadEl.createEl('button', { text: `⬇️ Download ${betterModel.id}` });
+        dlButton.addEventListener('click', async () => {
+          await this.plugin.pullOllamaModel(betterModel.id);
+          this.display();
         });
       }
     }

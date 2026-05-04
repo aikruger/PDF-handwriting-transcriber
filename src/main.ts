@@ -4,7 +4,8 @@ import { OpenAIProvider } from './providers/OpenAIProvider';
 import { OllamaProvider } from './providers/OllamaProvider';
 import { BaseProvider } from './providers/BaseProvider';
 import { PDFSelectorModal } from './modals/PDFSelectorModal';
-import { readPDFFile, ensurePdfJsLoaded, renderPageToDataUrl } from './utils/pdfUtils';
+import { readPDFFile, ensurePdfJsLoaded, renderPageToDataUrl, RANKING_PLACEHOLDER_IMAGE } from './utils/pdfUtils';
+import { readImageFile } from './utils/imageUtils';
 import { formatMermaidDiagrams, areConsecutive } from './utils/textUtils';
 
 export default class PDFTranscriberPlugin extends Plugin {
@@ -32,9 +33,16 @@ export default class PDFTranscriberPlugin extends Plugin {
       id: 'transcribe-pdf',
       name: 'Transcribe PDF with handwritten notes',
       editorCallback: (editor: any) => {
-        new PDFSelectorModal(this.app, this, (pdfPath: string, customOptions: any) => {
-          this.transcribePDF(pdfPath, editor, customOptions);
-        }).open();
+        new PDFSelectorModal(
+          this.app,
+          this,
+          (pdfPath: string, customOptions: any) => {
+            this.transcribePDF(pdfPath, editor, customOptions);
+          },
+          (imagePath: string, customOptions: any) => {
+            this.transcribeImage(imagePath, editor, customOptions);
+          }
+        ).open();
       }
     });
 
@@ -84,6 +92,20 @@ export default class PDFTranscriberPlugin extends Plugin {
       }));
     }
 
+    const OLD_TEXT_PROMPT = 'Please transcribe all handwritten text from this image. Format it cleanly with proper paragraphs, lists, and line breaks as they appear in the original.';
+    const OLD_DIAGRAM_PROMPT = 'This image contains a diagram or drawing. Please analyze it carefully and convert it to a mermaid diagram. Use the appropriate mermaid syntax based on the type of diagram (flowchart, sequence diagram, etc.). Focus on capturing the structure, relationships, and any text labels.';
+    const OLD_MIXED_PROMPT = "This image may contain both handwritten text and diagrams/drawings. Please:\n\n1. Transcribe all handwritten text accurately, maintaining paragraphs and formatting.\n\n2. For any diagrams or drawings, convert them to mermaid syntax. Wrap the mermaid code in triple backticks with 'mermaid' label.\n\nEnsure you maintain the logical flow of the document, placing the mermaid diagrams in the appropriate locations relative to the text.";
+
+    if (loaded.defaultTextPrompt === OLD_TEXT_PROMPT) {
+      loaded.defaultTextPrompt = DEFAULT_SETTINGS.defaultTextPrompt;
+    }
+    if (loaded.defaultDiagramPrompt === OLD_DIAGRAM_PROMPT) {
+      loaded.defaultDiagramPrompt = DEFAULT_SETTINGS.defaultDiagramPrompt;
+    }
+    if (loaded.defaultMixedPrompt === OLD_MIXED_PROMPT) {
+      loaded.defaultMixedPrompt = DEFAULT_SETTINGS.defaultMixedPrompt;
+    }
+
     this.settings = loaded;
   }
 
@@ -127,6 +149,24 @@ export default class PDFTranscriberPlugin extends Plugin {
     });
   }
 
+  // @ts-ignore
+
+  async pullOllamaModel(modelId: string): Promise<void> {
+    const notice = new Notice(`Pulling ${modelId}...`, 0);
+
+    const ok = await this.ollamaProvider.pullModel(modelId, (status) => {
+      notice.setMessage(`Pulling ${modelId}: ${status}`);
+    });
+
+    notice.hide();
+
+    if (ok) {
+      new Notice(`${modelId} downloaded successfully`);
+      await this.refreshAndRecommendModels('ollama');
+    } else {
+      new Notice(`Failed to pull ${modelId}`);
+    }
+  }
   // @ts-ignore
   private getModelsForProvider(providerName: string) {
     return providerName === 'ollama'
@@ -191,7 +231,25 @@ export default class PDFTranscriberPlugin extends Plugin {
     await this.saveSettings();
 
     try {
-      const fetchedModels = await provider.fetchModels();
+      let fetchedModels = await provider.fetchModels();
+
+      // NEW: for Ollama, use OpenAI to rank if available
+      if (providerName === 'ollama' && this.openaiProvider.isConfigured()) {
+        new Notice('Using OpenAI to rank local models for handwriting quality...');
+
+        fetchedModels = await (this.ollamaProvider as OllamaProvider)
+          .rankModelsWithCloudAssistance(fetchedModels, async (prompt: string) => {
+            const result = await this.openaiProvider.transcribe({
+              model: this.settings.selectedModel,
+              prompt,
+              imageDataUrl: RANKING_PLACEHOLDER_IMAGE, // a plain white JPEG
+              maxTokens: 500
+            });
+            return result.text;
+          });
+
+        new Notice('Cloud ranking complete');
+      }
       const topCandidates = [...fetchedModels]
         .sort((a, b) => (b.score || 0) - (a.score || 0))
         .slice(0, 5);
@@ -228,6 +286,15 @@ export default class PDFTranscriberPlugin extends Plugin {
       this.setModelsForProvider(providerName, mergedModels);
       this.settings.providerModelProbeStatus[providerName] = 'complete';
       this.settings.recommendedModels[providerName] = bestModel;
+
+      if (providerName === 'ollama') {
+        const topModel = mergedModels.find(m => m.id === bestModel);
+        if (topModel && !this.settings.ollamaAvailableModels.find(m => m.id === bestModel)) {
+          this.settings.ollamaRecommendedDownload = { id: topModel.id, reason: topModel.reason || 'Better quality for handwriting' };
+        } else {
+          this.settings.ollamaRecommendedDownload = null;
+        }
+      }
 
       const currentSelected = this.getSelectedModelForProvider(providerName);
       const selectedStillValid = mergedModels.some(
@@ -266,7 +333,13 @@ export default class PDFTranscriberPlugin extends Plugin {
 
   async transcribePDF(pdfPath: string, editor: any, customOptions: any = {}) {
     try {
-      const provider = this.activeProvider;
+      let provider = this.activeProvider;
+
+      if (customOptions.overrideProvider === 'ollama' && this.settings.enableOllama) {
+        provider = this.ollamaProvider;
+      } else if (customOptions.overrideProvider === 'openai') {
+        provider = this.openaiProvider;
+      }
 
       // Check provider is configured — new guard using abstraction
       if (!provider.isConfigured()) {
@@ -346,9 +419,9 @@ export default class PDFTranscriberPlugin extends Plugin {
       }
 
       // Active model from settings — used for display, provider handles actual routing
-      const activeModel = provider.providerName === 'ollama'
+      const activeModel = customOptions.overrideModel || (provider.providerName === 'ollama'
         ? this.settings.ollamaSelectedModel
-        : this.settings.selectedModel;
+        : this.settings.selectedModel);
 
       // Batch processing — preserve original loop structure exactly
       for (let batchIndex = 0; batchIndex < pagesToProcess.length; batchIndex += batchSize) {
@@ -427,6 +500,64 @@ export default class PDFTranscriberPlugin extends Plugin {
     } catch (error: any) {
       console.error('Transcription error:', error);
       new Notice(`Error: ${error.message || 'Failed to transcribe PDF'}`);
+    }
+  }
+
+  async transcribeImage(imagePath: string, editor: any, customOptions: any = {}) {
+    try {
+      let provider = this.activeProvider;
+      if (customOptions.overrideProvider === 'ollama' && this.settings.enableOllama) {
+        provider = this.ollamaProvider;
+      } else if (customOptions.overrideProvider === 'openai') {
+        provider = this.openaiProvider;
+      }
+
+      if (!provider.isConfigured()) {
+        new Notice(provider.getConfigurationStatus());
+        return;
+      }
+
+      const activeModel = customOptions.overrideModel
+        || (provider.providerName === 'ollama'
+            ? this.settings.ollamaSelectedModel
+            : this.settings.selectedModel);
+
+      const options = {
+        textPrompt: customOptions.textPrompt || this.settings.defaultTextPrompt,
+        diagramPrompt: customOptions.diagramPrompt || this.settings.defaultDiagramPrompt,
+        mixedPrompt: customOptions.mixedPrompt || this.settings.defaultMixedPrompt,
+        contentMode: customOptions.contentMode || this.settings.contentMode,
+      };
+
+      const status = new Notice('Reading image file...', 0);
+
+      const imageDataUrl = await readImageFile(this.app, imagePath);
+
+      if (!imageDataUrl) {
+        status.hide();
+        new Notice('Failed to read image file');
+        return;
+      }
+
+      status.setMessage('Transcribing image...');
+
+      const prompt = options.contentMode === 'diagram'
+        ? options.diagramPrompt
+        : options.contentMode === 'text'
+          ? options.textPrompt
+          : options.mixedPrompt;
+
+      const result = await provider.transcribe({ imageDataUrl, prompt, model: activeModel });
+
+      const fileName = imagePath.split('/').pop();
+      const output = `# Transcription of ${fileName}\n\n${result.text}\n\n`;
+
+      status.hide();
+      editor.replaceSelection(output);
+      new Notice('Image transcription complete!');
+
+    } catch (error: any) {
+      new Notice(`Error: ${error?.message || 'Failed to transcribe image'}`);
     }
   }
 

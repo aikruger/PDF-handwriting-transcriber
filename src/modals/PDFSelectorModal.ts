@@ -32,20 +32,32 @@ export class PDFSelectorModal extends Modal {
   private customDiagramPrompt: string;
   private customMixedPrompt: string;
   private detectDiagrams: boolean;
+  private selectedProvider: 'openai' | 'ollama';
+  private selectedModel: string;
+  fileTypeFilter: 'pdf' | 'image' | 'all';
 
+
+  onSubmitImage: (imagePath: string, options: TranscriptionOptions) => void;
 
   constructor(
     app: App,
     plugin: any,
-    onSubmit: (pdfPath: string, options: TranscriptionOptions) => void
+    onSubmit: (pdfPath: string, options: TranscriptionOptions) => void,
+    onSubmitImage: (imagePath: string, options: TranscriptionOptions) => void
   ) {
     super(app);
     this.plugin = plugin;
     this.onSubmit = onSubmit;
+    this.onSubmitImage = onSubmitImage;
     this.customTextPrompt = plugin.settings.defaultTextPrompt;
     this.customDiagramPrompt = plugin.settings.defaultDiagramPrompt;
     this.customMixedPrompt = plugin.settings.defaultMixedPrompt;
     this.detectDiagrams = plugin.settings.detectDiagrams;
+    this.selectedProvider = plugin.settings.activeProvider as 'openai' | 'ollama';
+    this.selectedModel = plugin.settings.activeProvider === 'ollama'
+      ? plugin.settings.ollamaSelectedModel
+      : plugin.settings.selectedModel;
+    this.fileTypeFilter = 'pdf';
   }
 
   onOpen() {
@@ -168,7 +180,7 @@ export class PDFSelectorModal extends Modal {
     this.searchResultsEl.style.overflowY = 'auto';
 
     // Load PDFs
-    this.loadAllPdfs();
+    this.loadAllFiles();
 
     // Search functionality
     searchInput.addEventListener('input', (e) => {
@@ -253,7 +265,9 @@ export class PDFSelectorModal extends Modal {
         detectDiagrams: this.detectDiagrams,
         contentMode: this.contentMode,
         selectedPages: this.selectedPages.length > 0 ? this.selectedPages : null,
-      };
+        overrideProvider: this.selectedProvider,
+        overrideModel: this.selectedModel
+      } as any;
 
       this.onSubmit(this.pdfPath, customOptions);
       this.close();
@@ -404,7 +418,7 @@ export class PDFSelectorModal extends Modal {
     });
   }
 
-  private loadAllPdfs() {
+  private loadAllFiles() {
     this.allPdfFiles = [];
     this.app.vault.getFiles().forEach((file) => {
       if (file.extension === 'pdf') {
