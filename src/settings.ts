@@ -1,5 +1,9 @@
-import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
-// import { remoteJsonRequest } from './utils/http';
+import { PluginSettings } from './models/types';
+export { PluginSettings };
+
+import { App, PluginSettingTab, Setting } from 'obsidian';
+import { ProviderProfile } from './models/types';
+import { Logger } from './utils/logger';
 
 export interface StoredModelInfo {
   id: string;
@@ -13,61 +17,60 @@ export interface StoredModelInfo {
   provider?: string;
 }
 
-export interface PluginSettings {
-  activeProvider: 'openai' | 'ollama';
-  enableOllama: boolean;
 
-  apiKey: string;
-  selectedModel: string;
-  availableModels: StoredModelInfo[];
 
-  ollamaBaseUrl: string;
-  ollamaSelectedModel: string;
-  ollamaAvailableModels: StoredModelInfo[];
-
-  // ===== PDF PROCESSING SETTINGS (unchanged from original) =====
-  defaultPdfFolder: string;
-  maxPages: number;
-  pageStart: number;
-  pageEnd: number;
-  batchSize: number;
-  renderScale: number;
-  imageQuality: number;
-
-  // ===== PROMPT SETTINGS (unchanged from original) =====
-  defaultTextPrompt: string;
-  defaultDiagramPrompt: string;
-  defaultMixedPrompt: string;
-  detectDiagrams: boolean;
-  useMermaid: boolean;
-  contentMode: 'text' | 'diagram' | 'mixed';
-
-  providerConnectionStatus: Record<string, 'unknown' | 'passed' | 'failed'>;
-  providerConnectionMessage: Record<string, string>;
-  providerModelProbeStatus: Record<string, 'unknown' | 'running' | 'complete' | 'failed'>;
-  recommendedModels: Record<string, string>;
-  ollamaRecommendedDownload: null | { id: string; reason: string };
-}
+const DEFAULT_PROFILES: ProviderProfile[] = [
+  {
+    id: 'profile-openai',
+    adapterId: 'openai',
+    displayName: 'OpenAI (Default)',
+    enabled: true,
+    credentialRef: '', // stores API key
+    selectedModels: {
+      handwriting: 'gpt-4o',
+      diagram: 'gpt-4o',
+      mixed: 'gpt-4o'
+    },
+    options: {}
+  },
+  {
+    id: 'profile-ollama',
+    adapterId: 'ollama',
+    displayName: 'Ollama (Local)',
+    enabled: false,
+    baseUrl: 'http://localhost:11434',
+    selectedModels: {
+      handwriting: 'llava',
+      diagram: 'llava',
+      mixed: 'llava'
+    },
+    options: {}
+  },
+  {
+    id: 'profile-openrouter',
+    adapterId: 'openrouter',
+    displayName: 'OpenRouter',
+    enabled: false,
+    credentialRef: '',
+    selectedModels: {},
+    options: {
+        requireDataPrivacy: true,
+        allowUpstreamFallback: false,
+        allowedUpstreamProviders: []
+    }
+  }
+];
 
 export const DEFAULT_SETTINGS: PluginSettings = {
-  activeProvider: 'openai',
-  enableOllama: false,
+  version: 2, // Bumped to 2 for new schema
+  profiles: JSON.parse(JSON.stringify(DEFAULT_PROFILES)),
+  activeProfileId: 'profile-openai',
 
-  apiKey: '',
-  selectedModel: 'gpt-4.1',
-  availableModels: [
-    { id: 'gpt-4.1', displayName: 'gpt-4.1', supportsVision: true, provider: 'openai', recommended: true, testStatus: 'untested', score: 100 },
-    { id: 'gpt-4o', displayName: 'gpt-4o', supportsVision: true, provider: 'openai', recommended: false, testStatus: 'untested', score: 90 },
-    { id: 'gpt-4-turbo', displayName: 'gpt-4-turbo', supportsVision: true, provider: 'openai', recommended: false, testStatus: 'untested', score: 75 }
-  ],
-
-  ollamaBaseUrl: 'http://localhost:11434',
-  ollamaSelectedModel: 'llava',
-  ollamaAvailableModels: [
-    { id: 'llava', displayName: 'llava', supportsVision: true, provider: 'ollama', recommended: true, testStatus: 'untested', score: 100 },
-    { id: 'llava:13b', displayName: 'llava:13b', supportsVision: true, provider: 'ollama', recommended: false, testStatus: 'untested', score: 95 },
-    { id: 'bakllava', displayName: 'bakllava', supportsVision: true, provider: 'ollama', recommended: false, testStatus: 'untested', score: 85 }
-  ],
+  taskDefaults: {
+    handwriting: { profileId: 'profile-openai', modelId: 'gpt-4o' },
+    diagram: { profileId: 'profile-openai', modelId: 'gpt-4o' },
+    mixed: { profileId: 'profile-openai', modelId: 'gpt-4o' }
+  },
 
   // PDF processing — preserve original defaults exactly
   defaultPdfFolder: '',
@@ -117,25 +120,71 @@ Process this document now:`,
   detectDiagrams: true,
   useMermaid: true,
   contentMode: 'mixed',
-
-  providerConnectionStatus: {
-    openai: 'unknown',
-    ollama: 'unknown'
-  },
-  providerConnectionMessage: {
-    openai: '',
-    ollama: ''
-  },
-  providerModelProbeStatus: {
-    openai: 'unknown',
-    ollama: 'unknown'
-  },
-  recommendedModels: {
-    openai: 'gpt-4.1',
-    ollama: 'llava'
-  },
-  ollamaRecommendedDownload: null
 };
+
+// Migration Logic
+export function migrateSettings(data: any): PluginSettings {
+  if (!data) return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+
+  const settings = Object.assign({}, JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), data);
+
+  if (!settings.version || settings.version < 2) {
+    Logger.log('Migration', 'Migrating settings to version 2 schema');
+
+    const profiles = JSON.parse(JSON.stringify(DEFAULT_PROFILES));
+
+    // Migrate OpenAI
+    const openAIProfile = profiles.find((p: any) => p.id === 'profile-openai');
+    if (data.apiKey) openAIProfile.credentialRef = data.apiKey;
+    if (data.selectedModel) {
+      openAIProfile.selectedModels = {
+        handwriting: data.selectedModel,
+        diagram: data.selectedModel,
+        mixed: data.selectedModel
+      };
+    }
+
+    // Migrate Ollama
+    const ollamaProfile = profiles.find((p: any) => p.id === 'profile-ollama');
+    if (data.ollamaBaseUrl) ollamaProfile.baseUrl = data.ollamaBaseUrl;
+    if (data.enableOllama) ollamaProfile.enabled = true;
+    if (data.ollamaSelectedModel) {
+      ollamaProfile.selectedModels = {
+        handwriting: data.ollamaSelectedModel,
+        diagram: data.ollamaSelectedModel,
+        mixed: data.ollamaSelectedModel
+      };
+    }
+
+    settings.profiles = profiles;
+
+    // Set active profile based on legacy activeProvider
+    if (data.activeProvider === 'ollama' && data.enableOllama) {
+      settings.activeProfileId = 'profile-ollama';
+    } else {
+      settings.activeProfileId = 'profile-openai';
+    }
+
+    settings.version = 2;
+
+    // Cleanup legacy fields if desired, or keep them around.
+    delete settings.apiKey;
+    delete settings.selectedModel;
+    delete settings.availableModels;
+    delete settings.ollamaBaseUrl;
+    delete settings.ollamaSelectedModel;
+    delete settings.ollamaAvailableModels;
+    delete settings.activeProvider;
+    delete settings.enableOllama;
+    delete settings.providerConnectionStatus;
+    delete settings.providerConnectionMessage;
+    delete settings.providerModelProbeStatus;
+    delete settings.recommendedModels;
+    delete settings.ollamaRecommendedDownload;
+  }
+
+  return settings;
+}
 
 export class PDFTranscriberSettingTab extends PluginSettingTab {
   plugin: any;
@@ -149,210 +198,137 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    // === Section 1: Provider Selection (NEW) ===
     containerEl.createEl('h2', { text: '🌐 Provider Settings' });
 
     new Setting(containerEl)
       .setName('Active Provider')
       .setDesc('Select which AI provider to use for transcription.')
       .addDropdown((dropdown) => {
-        dropdown.addOption('openai', 'OpenAI');
-        if (this.plugin.settings.enableOllama) {
-          dropdown.addOption('ollama', 'Ollama (Local)');
-        }
-        dropdown.setValue(this.plugin.settings.activeProvider)
+        this.plugin.settings.profiles.forEach((p: ProviderProfile) => {
+            if(p.enabled || p.adapterId === 'openai' || p.adapterId === 'openrouter') {
+                dropdown.addOption(p.id, p.displayName);
+            }
+        });
+        dropdown.setValue(this.plugin.settings.activeProfileId)
           .onChange(async (value: string) => {
-            this.plugin.settings.activeProvider = value;
+            this.plugin.settings.activeProfileId = value;
             await this.plugin.saveSettings();
-            this.display(); // re-render to show/hide provider specific settings
+            this.display();
           });
       });
 
-    new Setting(containerEl)
-      .setName('Enable Local Ollama Provider')
-      .setDesc('Toggle to enable local transcription using Ollama.')
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.enableOllama)
-          .onChange(async (value) => {
-            this.plugin.settings.enableOllama = value;
-            if (!value && this.plugin.settings.activeProvider === 'ollama') {
-              this.plugin.settings.activeProvider = 'openai';
-            }
-            await this.plugin.saveSettings();
-            this.display(); // re-render conditional sections
-          })
-      );
+    const activeProfile = this.plugin.settings.profiles.find((p: ProviderProfile) => p.id === this.plugin.settings.activeProfileId);
 
-    // Conditional block for Ollama settings
-    if (this.plugin.settings.activeProvider === 'ollama' && this.plugin.settings.enableOllama) {
-      containerEl.createEl('h3', { text: '🦙 Ollama Configuration' });
+    if (activeProfile) {
+      if (activeProfile.adapterId === 'openai') {
+        containerEl.createEl('h3', { text: '🤖 OpenAI Configuration' });
+        new Setting(containerEl)
+          .setName('OpenAI API Key')
+          .setDesc('Get your key from https://platform.openai.com/api-keys')
+          .addText((text) =>
+            text
+              .setPlaceholder('sk-...')
+              .setValue(activeProfile.credentialRef || '')
+              .onChange(async (value) => {
+                activeProfile.credentialRef = value;
+                await this.plugin.saveSettings();
+              })
+          );
 
-      new Setting(containerEl)
-        .setName('Ollama Base URL')
-        .setDesc('The URL where your local Ollama instance is running.')
-        .addText((text) =>
-          text
-            .setPlaceholder('http://localhost:11434')
-            .setValue(this.plugin.settings.ollamaBaseUrl)
-            .onChange(async (value) => {
-              this.plugin.settings.ollamaBaseUrl = value;
-              await this.plugin.saveSettings();
-            })
-        );
+          this.addProfileActions(containerEl, activeProfile);
+      } else if (activeProfile.adapterId === 'ollama') {
+         containerEl.createEl('h3', { text: '🦙 Ollama Configuration' });
+         new Setting(containerEl)
+            .setName('Enable Local Ollama Provider')
+            .setDesc('Toggle to enable local transcription using Ollama.')
+            .addToggle((toggle) =>
+                toggle
+                .setValue(activeProfile.enabled)
+                .onChange(async (value) => {
+                    activeProfile.enabled = value;
+                    if (!value) {
+                         this.plugin.settings.activeProfileId = 'profile-openai';
+                    }
+                    await this.plugin.saveSettings();
+                    this.display();
+                })
+            );
 
-      new Setting(containerEl)
-        .setName('Ollama Model')
-        .setDesc('Select an installed vision-capable Ollama model.')
-        .addDropdown((dropdown) => {
-          this.plugin.settings.ollamaAvailableModels.forEach((model: StoredModelInfo) => {
-            let label = model.displayName;
-            if (model.recommended) label += ' — Recommended';
-            else if (model.testStatus === 'passed') label += ' — Compatible';
-            else if (model.testStatus === 'failed') label += ' — Failed probe';
+         new Setting(containerEl)
+            .setName('Ollama Base URL')
+            .setDesc('The URL where your local Ollama instance is running.')
+            .addText((text) =>
+              text
+                .setPlaceholder('http://localhost:11434')
+                .setValue(activeProfile.baseUrl || 'http://localhost:11434')
+                .onChange(async (value) => {
+                  activeProfile.baseUrl = value;
+                  await this.plugin.saveSettings();
+                })
+            );
 
-            dropdown.addOption(model.id, label);
-          });
-          dropdown.setValue(this.plugin.settings.ollamaSelectedModel)
-            .onChange(async (value) => {
-              this.plugin.settings.ollamaSelectedModel = value;
-              await this.plugin.saveSettings();
-            });
-        });
+            this.addProfileActions(containerEl, activeProfile);
+      } else if (activeProfile.adapterId === 'openrouter') {
+          containerEl.createEl('h3', { text: '🔄 OpenRouter Configuration' });
 
-      new Setting(containerEl)
-        .setName('Test Connection')
-        .setDesc('Verify that Obsidian can connect to your local Ollama instance.')
-        .addButton((button) =>
-          button.setButtonText('Test Connection').onClick(async () => {
-            await this.plugin.testProviderConnection('ollama');
-            this.display();
-          })
-        );
+          new Setting(containerEl)
+            .setName('Enable OpenRouter Provider')
+            .addToggle((toggle) =>
+                toggle
+                .setValue(activeProfile.enabled)
+                .onChange(async (value) => {
+                    activeProfile.enabled = value;
+                    if (!value) {
+                         this.plugin.settings.activeProfileId = 'profile-openai';
+                    }
+                    await this.plugin.saveSettings();
+                    this.display();
+                })
+            );
 
-      new Setting(containerEl)
-        .setName('Refresh & Recommend')
-        .setDesc('Fetch installed vision models from your Ollama instance and test their compatibility.')
-        .addButton((button) =>
-          button.setButtonText('Refresh & Recommend').onClick(async () => {
-            const ok = await this.plugin.testProviderConnection('ollama');
-            if (ok) {
-              await this.plugin.refreshAndRecommendModels('ollama');
-            }
-            this.display();
-          })
-        );
+          new Setting(containerEl)
+          .setName('OpenRouter API Key')
+          .setDesc('Get your key from https://openrouter.ai/keys')
+          .addText((text) =>
+            text
+              .setPlaceholder('sk-or-v1-...')
+              .setValue(activeProfile.credentialRef || '')
+              .onChange(async (value) => {
+                activeProfile.credentialRef = value;
+                await this.plugin.saveSettings();
+              })
+          );
 
-      if (this.plugin.settings.providerConnectionMessage.ollama) {
-        containerEl.createEl('p', {
-          text: `Status: ${this.plugin.settings.providerConnectionMessage.ollama}`,
-          cls: 'setting-item-description'
-        });
-      }
-      if (this.plugin.settings.providerModelProbeStatus.ollama !== 'unknown') {
-        containerEl.createEl('p', {
-          text: `Probe Status: ${this.plugin.settings.providerModelProbeStatus.ollama}`,
-          cls: 'setting-item-description'
-        });
-      }
+          new Setting(containerEl)
+          .setName('Require Data Privacy')
+          .setDesc('Enforce strict zero-data-retention routing policies. If enabled, only upstream providers that do not store your data will be used.')
+          .addToggle((toggle) =>
+            toggle
+              .setValue(activeProfile.options?.requireDataPrivacy as boolean ?? true)
+              .onChange(async (value) => {
+                if(!activeProfile.options) activeProfile.options = {};
+                activeProfile.options.requireDataPrivacy = value;
+                await this.plugin.saveSettings();
+              })
+          );
 
-      const betterModel = this.plugin.settings.ollamaRecommendedDownload;
-      if (betterModel) {
-        const downloadEl = containerEl.createEl('div');
-        downloadEl.style.padding = '10px';
-        downloadEl.style.marginTop = '8px';
-        downloadEl.style.backgroundColor = 'var(--background-secondary)';
-        downloadEl.style.borderRadius = '6px';
-        downloadEl.style.border = '1px solid var(--background-modifier-border)';
+          new Setting(containerEl)
+          .setName('Allow Upstream Fallback')
+          .setDesc('Allow OpenRouter to route your request to a different upstream inference provider for the same model if the primary fails.')
+          .addToggle((toggle) =>
+            toggle
+              .setValue(activeProfile.options?.allowUpstreamFallback as boolean ?? false)
+              .onChange(async (value) => {
+                if(!activeProfile.options) activeProfile.options = {};
+                activeProfile.options.allowUpstreamFallback = value;
+                await this.plugin.saveSettings();
+              })
+          );
 
-        downloadEl.createEl('p', {
-          text: `💡 Better model available: ${betterModel.id} — ${betterModel.reason}`
-        });
-
-        const dlButton = downloadEl.createEl('button', { text: `⬇️ Download ${betterModel.id}` });
-        dlButton.addEventListener('click', async () => {
-          await this.plugin.pullOllamaModel(betterModel.id);
-          this.display();
-        });
-      }
-    }
-
-    // === Section 2: API Settings ===
-    if (this.plugin.settings.activeProvider === 'openai') {
-      containerEl.createEl('h3', { text: '🤖 OpenAI Configuration' });
-
-      new Setting(containerEl)
-        .setName('OpenAI API Key')
-        .setDesc('Get your key from https://platform.openai.com/api-keys')
-        .addText((text) =>
-          text
-            .setPlaceholder('sk-...')
-            .setValue(this.plugin.settings.apiKey)
-            .onChange(async (value) => {
-              this.plugin.settings.apiKey = value;
-              await this.plugin.saveSettings();
-            })
-        );
-
-      new Setting(containerEl)
-        .setName('OpenAI Model')
-        .setDesc('Select the model to use for transcription.')
-        .addDropdown((dropdown) => {
-          this.plugin.settings.availableModels.forEach((model: StoredModelInfo) => {
-            let label = model.displayName;
-            if (model.recommended) label += ' — Recommended';
-            else if (model.testStatus === 'passed') label += ' — Compatible';
-            else if (model.testStatus === 'failed') label += ' — Failed probe';
-
-            dropdown.addOption(model.id, label);
-          });
-          dropdown.setValue(this.plugin.settings.selectedModel)
-            .onChange(async (value) => {
-              this.plugin.settings.selectedModel = value;
-              await this.plugin.saveSettings();
-            });
-        });
-
-      new Setting(containerEl)
-        .setName('Test Connection')
-        .setDesc('Verify that Obsidian can connect to OpenAI.')
-        .addButton((button) =>
-          button.setButtonText('Test Connection').onClick(async () => {
-            await this.plugin.testProviderConnection('openai');
-            this.display();
-          })
-        );
-
-      new Setting(containerEl)
-        .setName('Refresh & Recommend Models')
-        .setDesc('Fetch the latest available models from OpenAI and recommend the best compatible model.')
-        .addButton((button) =>
-          button.setButtonText('Refresh & Recommend').onClick(async () => {
-            if (!this.plugin.settings.apiKey) {
-              new Notice('Please enter an API key first');
-              return;
-            }
-            const ok = await this.plugin.testProviderConnection('openai');
-            if (ok) {
-              await this.plugin.refreshAndRecommendModels('openai');
-            }
-            this.display();
-          })
-        );
-
-      if (this.plugin.settings.providerConnectionMessage.openai) {
-        containerEl.createEl('p', {
-          text: `Status: ${this.plugin.settings.providerConnectionMessage.openai}`,
-          cls: 'setting-item-description'
-        });
-      }
-      if (this.plugin.settings.providerModelProbeStatus.openai !== 'unknown') {
-        containerEl.createEl('p', {
-          text: `Probe Status: ${this.plugin.settings.providerModelProbeStatus.openai}`,
-          cls: 'setting-item-description'
-        });
+          this.addProfileActions(containerEl, activeProfile);
       }
     }
+
 
     // === Section 3: PDF Processing ===
     containerEl.createEl('h2', { text: '📄 PDF Processing' });
@@ -508,5 +484,28 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+  }
+
+  private addProfileActions(containerEl: HTMLElement, activeProfile: ProviderProfile) {
+        // Will implement connection test and catalogue refresh
+        new Setting(containerEl)
+        .setName('Test Connection')
+        .setDesc(`Verify that Obsidian can connect to ${activeProfile.displayName}.`)
+        .addButton((button) =>
+          button.setButtonText('Test Connection').onClick(async () => {
+             await this.plugin.testProviderConnection(activeProfile.id);
+             this.display();
+          })
+        );
+
+        new Setting(containerEl)
+        .setName('Refresh Catalogue')
+        .setDesc(`Fetch the latest models for ${activeProfile.displayName}.`)
+        .addButton((button) =>
+          button.setButtonText('Refresh Models').onClick(async () => {
+             await this.plugin.refreshProviderModels(activeProfile.id);
+             this.display();
+          })
+        );
   }
 }

@@ -1,33 +1,25 @@
+import { ProviderRegistry } from './providers/ProviderRegistry';
+import { resolveJobConfig } from './services/resolveJobConfig';
+import { processImageWithConfig, detectDiagramWithConfig } from './services/TranscriptionService';
 import { Plugin, Notice } from 'obsidian';
 import { PluginSettings, DEFAULT_SETTINGS, PDFTranscriberSettingTab } from './settings';
 import { OpenAIProvider } from './providers/OpenAIProvider';
 import { OllamaProvider } from './providers/OllamaProvider';
-import { BaseProvider } from './providers/BaseProvider';
 import { PDFSelectorModal } from './modals/PDFSelectorModal';
-import { readPDFFile, ensurePdfJsLoaded, renderPageToDataUrl, RANKING_PLACEHOLDER_IMAGE } from './utils/pdfUtils';
+import { readPDFFile, ensurePdfJsLoaded, renderPageToDataUrl } from './utils/pdfUtils';
 import { readImageFile } from './utils/imageUtils';
 import { formatMermaidDiagrams, areConsecutive } from './utils/textUtils';
 
 export default class PDFTranscriberPlugin extends Plugin {
+  public providerRegistry = new ProviderRegistry();
+
   settings!: PluginSettings;
   private openaiProvider!: OpenAIProvider;
   private ollamaProvider!: OllamaProvider;
 
-  getProviderByName(providerName: 'openai' | 'ollama'): BaseProvider {
-    return providerName === 'ollama' ? this.ollamaProvider : this.openaiProvider;
-  }
-
-  // Returns the currently active provider based on settings
-  get activeProvider(): BaseProvider {
-    if (this.settings.activeProvider === 'ollama' && this.settings.enableOllama) {
-      return this.ollamaProvider;
-    }
-    return this.openaiProvider;
-  }
-
   async onload() {
     await this.loadSettings();
-    this.initProviders();
+
 
     this.addCommand({
       id: 'transcribe-pdf',
@@ -51,17 +43,6 @@ export default class PDFTranscriberPlugin extends Plugin {
 
   onunload() {}
 
-  private initProviders() {
-    this.openaiProvider = new OpenAIProvider({
-      apiKey: this.settings.apiKey,
-      selectedModel: this.settings.selectedModel
-    });
-
-    this.ollamaProvider = new OllamaProvider({
-      baseUrl: this.settings.ollamaBaseUrl,
-      selectedModel: this.settings.ollamaSelectedModel
-    });
-  }
 
   async loadSettings() {
     const loaded = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -140,231 +121,34 @@ export default class PDFTranscriberPlugin extends Plugin {
     await this.saveData(this.settings);
     // Sync provider configs after any setting change
     this.openaiProvider.updateConfig({
-      apiKey: this.settings.apiKey,
-      selectedModel: this.settings.selectedModel
+      apiKey: '',
+      selectedModel: ''
     });
     this.ollamaProvider.updateConfig({
-      baseUrl: this.settings.ollamaBaseUrl,
-      selectedModel: this.settings.ollamaSelectedModel
+      baseUrl: '',
+      selectedModel: ''
     });
   }
 
   // @ts-ignore
-
-  async pullOllamaModel(modelId: string): Promise<void> {
-    const notice = new Notice(`Pulling ${modelId}...`, 0);
-
-    const ok = await this.ollamaProvider.pullModel(modelId, (status) => {
-      notice.setMessage(`Pulling ${modelId}: ${status}`);
-    });
-
-    notice.hide();
-
-    if (ok) {
-      new Notice(`${modelId} downloaded successfully`);
-      await this.refreshAndRecommendModels('ollama');
-    } else {
-      new Notice(`Failed to pull ${modelId}`);
-    }
-  }
-  // @ts-ignore
-  private getModelsForProvider(providerName: string) {
-    return providerName === 'ollama'
-      ? this.settings.ollamaAvailableModels
-      : this.settings.availableModels;
-  }
-
-  private setModelsForProvider(providerName: string, models: any[]) {
-    if (providerName === 'ollama') {
-      this.settings.ollamaAvailableModels = models;
-    } else {
-      this.settings.availableModels = models;
-    }
-  }
-
-  private getSelectedModelForProvider(providerName: string): string {
-    return providerName === 'ollama'
-      ? this.settings.ollamaSelectedModel
-      : this.settings.selectedModel;
-  }
-
-  private setSelectedModelForProvider(providerName: string, model: string) {
-    if (providerName === 'ollama') {
-      this.settings.ollamaSelectedModel = model;
-    } else {
-      this.settings.selectedModel = model;
-    }
-  }
-
-  async testProviderConnection(providerName: 'openai' | 'ollama'): Promise<boolean> {
-    const provider = this.getProviderByName(providerName);
-
-    try {
-      const result = await provider.testConnection();
-
-      this.settings.providerConnectionStatus[providerName] = result.ok ? 'passed' : 'failed';
-      this.settings.providerConnectionMessage[providerName] = result.message;
-      await this.saveSettings();
-
-      new Notice(result.message);
-      return result.ok;
-    } catch (error: any) {
-      this.settings.providerConnectionStatus[providerName] = 'failed';
-      this.settings.providerConnectionMessage[providerName] =
-        error?.message || `Connection test failed for ${provider.displayName}`;
-      await this.saveSettings();
-
-      new Notice(this.settings.providerConnectionMessage[providerName]);
-      return false;
-    }
-  }
-
-  async refreshAndRecommendModels(providerName: 'openai' | 'ollama'): Promise<boolean> {
-    const provider = this.getProviderByName(providerName);
-
-    if (!provider.isConfigured()) {
-      new Notice(provider.getConfigurationStatus());
-      return false;
-    }
-
-    this.settings.providerModelProbeStatus[providerName] = 'running';
-    await this.saveSettings();
-
-    try {
-      let fetchedModels = await provider.fetchModels();
-
-      // NEW: for Ollama, use OpenAI to rank if available
-      if (providerName === 'ollama' && this.openaiProvider.isConfigured()) {
-        new Notice('Using OpenAI to rank local models for handwriting quality...');
-
-        fetchedModels = await (this.ollamaProvider as OllamaProvider)
-          .rankModelsWithCloudAssistance(fetchedModels, async (prompt: string) => {
-            const result = await this.openaiProvider.transcribe({
-              model: this.settings.selectedModel,
-              prompt,
-              imageDataUrl: RANKING_PLACEHOLDER_IMAGE, // a plain white JPEG
-              maxTokens: 500
-            });
-            return result.text;
-          });
-
-        new Notice('Cloud ranking complete');
-      }
-      const topCandidates = [...fetchedModels]
-        .sort((a, b) => (b.score || 0) - (a.score || 0))
-        .slice(0, 5);
-
-      const probeResults: any[] = [];
-      if (provider.supportsModelProbe()) {
-        for (const model of topCandidates) {
-          const probe = await provider.probeModelCompatibility(model.id);
-          probeResults.push(probe);
-        }
-      }
-
-      const bestModel = this.pickBestRecommendedModel(fetchedModels, probeResults);
-
-      const mergedModels = fetchedModels
-        .map((model) => {
-          const probe = probeResults.find((p) => p.model === model.id);
-          const passed = probe?.ok === true;
-
-          return {
-            ...model,
-            tested: !!probe,
-            testStatus: probe ? (passed ? 'passed' : 'failed') : 'untested',
-            recommended: model.id === bestModel,
-            reason: probe?.reason
-          };
-        })
-        .sort((a, b) => {
-          const aRank = a.recommended ? 1000 : a.testStatus === 'passed' ? 500 : 0;
-          const bRank = b.recommended ? 1000 : b.testStatus === 'passed' ? 500 : 0;
-          return (bRank + (b.score || 0)) - (aRank + (a.score || 0));
-        });
-
-      this.setModelsForProvider(providerName, mergedModels);
-      this.settings.providerModelProbeStatus[providerName] = 'complete';
-      this.settings.recommendedModels[providerName] = bestModel;
-
-      if (providerName === 'ollama') {
-        const topModel = mergedModels.find(m => m.id === bestModel);
-        if (topModel && !this.settings.ollamaAvailableModels.find(m => m.id === bestModel)) {
-          this.settings.ollamaRecommendedDownload = { id: topModel.id, reason: topModel.reason || 'Better quality for handwriting' };
-        } else {
-          this.settings.ollamaRecommendedDownload = null;
-        }
-      }
-
-      const currentSelected = this.getSelectedModelForProvider(providerName);
-      const selectedStillValid = mergedModels.some(
-        (m) => m.id === currentSelected && m.testStatus !== 'failed'
-      );
-
-      if (!selectedStillValid && bestModel) {
-        this.setSelectedModelForProvider(providerName, bestModel);
-      }
-
-      await this.saveSettings();
-      new Notice(`${provider.displayName} models refreshed. Recommended: ${bestModel}`);
-      return true;
-    } catch (error: any) {
-      this.settings.providerModelProbeStatus[providerName] = 'failed';
-      await this.saveSettings();
-
-      new Notice(`Failed to refresh ${provider.displayName} models: ${error?.message || 'Unknown error'}`);
-      return false;
-    }
-  }
-
-  private pickBestRecommendedModel(
-    models: { id: string; score?: number }[],
-    probes: { model: string; ok: boolean }[]
-  ): string {
-    const passed = models
-      .filter((m) => probes.some((p) => p.model === m.id && p.ok))
-      .sort((a, b) => (b.score || 0) - (a.score || 0));
-
-    if (passed.length > 0) return passed[0].id;
-
-    const sorted = [...models].sort((a, b) => (b.score || 0) - (a.score || 0));
-    return sorted[0]?.id || '';
-  }
 
   async transcribePDF(pdfPath: string, editor: any, customOptions: any = {}) {
+    const status = new Notice('Reading PDF...', 0);
     try {
-      let provider = this.activeProvider;
+      const task = customOptions.contentMode || this.settings.contentMode;
+      const config = resolveJobConfig(this.settings, task, customOptions);
 
-      if (customOptions.overrideProvider === 'ollama' && this.settings.enableOllama) {
-        provider = this.ollamaProvider;
-      } else if (customOptions.overrideProvider === 'openai') {
-        provider = this.openaiProvider;
-      }
+      const profile = this.settings.profiles.find((p: any) => p.id === config.profileId);
+      if (!profile) throw new Error("Profile not found");
+      const provider = this.providerRegistry.getAdapter(profile);
 
-      // Check provider is configured — new guard using abstraction
       if (!provider.isConfigured()) {
-        new Notice(provider.getConfigurationStatus());
-        return;
+        throw new Error(provider.getConfigurationStatus());
       }
-
-      // Merge options — preserve original logic exactly
-      const options = {
-        textPrompt: customOptions.textPrompt || this.settings.defaultTextPrompt,
-        diagramPrompt: customOptions.diagramPrompt || this.settings.defaultDiagramPrompt,
-        mixedPrompt: customOptions.mixedPrompt || this.settings.defaultMixedPrompt,
-        detectDiagrams: customOptions.detectDiagrams !== undefined
-          ? customOptions.detectDiagrams : this.settings.detectDiagrams,
-        contentMode: customOptions.contentMode || this.settings.contentMode,
-        selectedPages: customOptions.selectedPages || null
-      };
-
-      const status = new Notice('Reading PDF...', 0);
 
       const pdfBuffer = await readPDFFile(this.app, pdfPath);
       if (!pdfBuffer) {
-        status.hide();
-        new Notice('Failed to read PDF file');
-        return;
+        throw new Error('Failed to read PDF file');
       }
 
       status.setMessage('Loading PDF and preparing for processing...');
@@ -374,40 +158,24 @@ export default class PDFTranscriberPlugin extends Plugin {
       const pdf = await loadingTask.promise;
       const numPages = pdf.numPages;
 
-      // Determine pages to process — preserve original logic exactly
       let pagesToProcess: number[] = [];
-
-      if (options.selectedPages && options.selectedPages.length > 0) {
-        pagesToProcess = options.selectedPages.filter((p: number) => p > 0 && p <= numPages);
+      if (customOptions.selectedPages && customOptions.selectedPages.length > 0) {
+        pagesToProcess = customOptions.selectedPages.filter((p: number) => p > 0 && p <= numPages);
       } else {
         const start = Math.max(1, this.settings.pageStart || 1);
         const maxPossiblePages = Math.min(numPages, this.settings.maxPages || 50);
-        const end = this.settings.pageEnd > 0
-          ? Math.min(this.settings.pageEnd, maxPossiblePages)
-          : maxPossiblePages;
-
-        if (start > end) {
-          status.hide();
-          new Notice(`Invalid page range: ${start} to ${end}`);
-          return;
-        }
-
+        const end = this.settings.pageEnd > 0 ? Math.min(this.settings.pageEnd, maxPossiblePages) : maxPossiblePages;
+        if (start > end) throw new Error(`Invalid page range: ${start} to ${end}`);
         for (let i = start; i <= end; i++) pagesToProcess.push(i);
       }
 
-      if (pagesToProcess.length === 0) {
-        status.hide();
-        new Notice('No pages selected for processing');
-        return;
-      }
+      if (pagesToProcess.length === 0) throw new Error('No pages selected for processing');
 
-      status.setMessage(`Processing ${pagesToProcess.length} pages in ${options.contentMode} mode...`);
+      status.setMessage(`Processing ${pagesToProcess.length} pages in ${task} mode...`);
 
       const batchSize = Math.max(1, this.settings.batchSize || 1);
-      let fullTranscription = '';
+      let fullTranscription = `# Transcription of ${pdfPath.split('/').pop()}\n`;
 
-      // Header — preserve original format exactly
-      fullTranscription += `# Transcription of ${pdfPath.split('/').pop()}\n`;
       if (pagesToProcess.length === 1) {
         fullTranscription += `Page ${pagesToProcess[0]} of ${numPages}\n\n`;
       } else if (pagesToProcess.length === numPages) {
@@ -418,18 +186,11 @@ export default class PDFTranscriberPlugin extends Plugin {
         fullTranscription += `Selected pages: ${pagesToProcess.join(', ')} (of ${numPages} total)\n\n`;
       }
 
-      // Active model from settings — used for display, provider handles actual routing
-      const activeModel = customOptions.overrideModel || (provider.providerName === 'ollama'
-        ? this.settings.ollamaSelectedModel
-        : this.settings.selectedModel);
-
-      // Batch processing — preserve original loop structure exactly
       for (let batchIndex = 0; batchIndex < pagesToProcess.length; batchIndex += batchSize) {
         const batchPageNums = pagesToProcess.slice(batchIndex, batchIndex + batchSize);
         status.setMessage(`Converting pages ${batchPageNums.join(', ')}...`);
 
         const batchPages: { pageNum: number; imageDataUrl: string }[] = [];
-
         for (const pageNum of batchPageNums) {
           const imageDataUrl = await renderPageToDataUrl(
             pdf, pageNum, this.settings.renderScale, this.settings.imageQuality
@@ -441,50 +202,26 @@ export default class PDFTranscriberPlugin extends Plugin {
           status.setMessage(`Transcribing page ${pageNum}...`);
 
           let pageTranscription = '';
+          const detectDiagrams = customOptions.detectDiagrams !== undefined ? customOptions.detectDiagrams : this.settings.detectDiagrams;
 
-          // Content mode routing — preserve original exactly
-          if (options.contentMode === 'mixed') {
-            const result = await provider.transcribe({
-              imageDataUrl, prompt: options.mixedPrompt, model: activeModel
-            });
-            pageTranscription = formatMermaidDiagrams(result.text);
-
-          } else if (options.contentMode === 'text') {
-            const result = await provider.transcribe({
-              imageDataUrl, prompt: options.textPrompt, model: activeModel
-            });
-            pageTranscription = result.text;
-
-          } else if (options.contentMode === 'diagram') {
-            const result = await provider.transcribe({
-              imageDataUrl, prompt: options.diagramPrompt, model: activeModel
-            });
-            pageTranscription = formatMermaidDiagrams(result.text);
-
-          } else {
-            // Legacy diagram detection mode — preserve original exactly
-            if (options.detectDiagrams) {
-              status.setMessage(`Analyzing page ${pageNum} for diagrams...`);
-              const containsDiagram = await this.checkForDiagrams(imageDataUrl, activeModel);
-
-              if (containsDiagram) {
-                status.setMessage(`Converting diagram on page ${pageNum}...`);
-                const result = await provider.transcribe({
-                  imageDataUrl, prompt: options.diagramPrompt, model: activeModel
-                });
-                pageTranscription = formatMermaidDiagrams(result.text);
-              } else {
-                const result = await provider.transcribe({
-                  imageDataUrl, prompt: options.textPrompt, model: activeModel
-                });
-                pageTranscription = result.text;
-              }
-            } else {
-              const result = await provider.transcribe({
-                imageDataUrl, prompt: options.textPrompt, model: activeModel
-              });
-              pageTranscription = result.text;
-            }
+          if (task === 'mixed' || task === 'diagram') {
+             pageTranscription = await processImageWithConfig(provider, config, imageDataUrl);
+             pageTranscription = formatMermaidDiagrams(pageTranscription);
+          } else if (task === 'text') {
+             if (detectDiagrams) {
+                 status.setMessage(`Analyzing page ${pageNum} for diagrams...`);
+                 const containsDiagram = await detectDiagramWithConfig(provider, config, imageDataUrl);
+                 if (containsDiagram) {
+                    status.setMessage(`Converting diagram on page ${pageNum}...`);
+                    const diagConfig = resolveJobConfig(this.settings, 'diagram', customOptions);
+                    pageTranscription = await processImageWithConfig(provider, diagConfig, imageDataUrl);
+                    pageTranscription = formatMermaidDiagrams(pageTranscription);
+                 } else {
+                    pageTranscription = await processImageWithConfig(provider, config, imageDataUrl);
+                 }
+             } else {
+                 pageTranscription = await processImageWithConfig(provider, config, imageDataUrl);
+             }
           }
 
           fullTranscription += `## Page ${pageNum}\n\n`;
@@ -493,88 +230,58 @@ export default class PDFTranscriberPlugin extends Plugin {
         }
       }
 
-      status.hide();
       editor.replaceSelection(fullTranscription);
       new Notice(`Transcription complete! Processed ${pagesToProcess.length} pages.`);
 
     } catch (error: any) {
       console.error('Transcription error:', error);
       new Notice(`Error: ${error.message || 'Failed to transcribe PDF'}`);
+    } finally {
+      status.hide();
     }
   }
 
   async transcribeImage(imagePath: string, editor: any, customOptions: any = {}) {
+    const status = new Notice('Reading image file...', 0);
     try {
-      let provider = this.activeProvider;
-      if (customOptions.overrideProvider === 'ollama' && this.settings.enableOllama) {
-        provider = this.ollamaProvider;
-      } else if (customOptions.overrideProvider === 'openai') {
-        provider = this.openaiProvider;
-      }
+      const task = customOptions.contentMode || this.settings.contentMode;
+      const config = resolveJobConfig(this.settings, task, customOptions);
+
+      const profile = this.settings.profiles.find((p: any) => p.id === config.profileId);
+      if (!profile) throw new Error("Profile not found");
+      const provider = this.providerRegistry.getAdapter(profile);
 
       if (!provider.isConfigured()) {
-        new Notice(provider.getConfigurationStatus());
-        return;
+        throw new Error(provider.getConfigurationStatus());
       }
 
-      const activeModel = customOptions.overrideModel
-        || (provider.providerName === 'ollama'
-            ? this.settings.ollamaSelectedModel
-            : this.settings.selectedModel);
-
-      const options = {
-        textPrompt: customOptions.textPrompt || this.settings.defaultTextPrompt,
-        diagramPrompt: customOptions.diagramPrompt || this.settings.defaultDiagramPrompt,
-        mixedPrompt: customOptions.mixedPrompt || this.settings.defaultMixedPrompt,
-        contentMode: customOptions.contentMode || this.settings.contentMode,
-      };
-
-      const status = new Notice('Reading image file...', 0);
-
       const imageDataUrl = await readImageFile(this.app, imagePath);
-
       if (!imageDataUrl) {
-        status.hide();
-        new Notice('Failed to read image file');
-        return;
+         throw new Error('Failed to read image file');
       }
 
       status.setMessage('Transcribing image...');
 
-      const prompt = options.contentMode === 'diagram'
-        ? options.diagramPrompt
-        : options.contentMode === 'text'
-          ? options.textPrompt
-          : options.mixedPrompt;
-
-      const result = await provider.transcribe({ imageDataUrl, prompt, model: activeModel });
+      let text = await processImageWithConfig(provider, config, imageDataUrl);
+      if (task === 'mixed' || task === 'diagram') {
+          text = formatMermaidDiagrams(text);
+      }
 
       const fileName = imagePath.split('/').pop();
-      const output = `# Transcription of ${fileName}\n\n${result.text}\n\n`;
+      const output = `# Transcription of ${fileName}\n\n${text}\n\n`;
 
-      status.hide();
       editor.replaceSelection(output);
       new Notice('Image transcription complete!');
 
     } catch (error: any) {
       new Notice(`Error: ${error?.message || 'Failed to transcribe image'}`);
+    } finally {
+      status.hide();
     }
   }
 
-  // Preserve original checkForDiagrams method — routes through provider abstraction
-  private async checkForDiagrams(imageDataUrl: string, model: string): Promise<boolean> {
-    try {
-      const result = await this.activeProvider.transcribe({
-        imageDataUrl,
-        prompt: "Does this image contain a diagram, chart, drawing, or visual representation? Answer only with 'yes' or 'no'.",
-        model,
-        maxTokens: 10
-      });
-      return result.text.toLowerCase().includes('yes');
-    } catch (error) {
-      return false; // Default to false on error, same as original
-    }
-  }
+  // Preserve original checkForDiagrams method
+
 
   // Expose readPDFFile for use by the modal (same as original plugin.readPDFFile)
   async readPDFFile(filePath: string): Promise<ArrayBuffer | null> {

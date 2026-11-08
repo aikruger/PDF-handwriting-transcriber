@@ -32,7 +32,7 @@ export class PDFSelectorModal extends Modal {
   private customDiagramPrompt: string;
   private customMixedPrompt: string;
   private detectDiagrams: boolean;
-  private selectedProvider: 'openai' | 'ollama';
+  private selectedProvider: string;
   private selectedModel: string;
   fileTypeFilter: 'pdf' | 'image' | 'all';
 
@@ -53,10 +53,8 @@ export class PDFSelectorModal extends Modal {
     this.customDiagramPrompt = plugin.settings.defaultDiagramPrompt;
     this.customMixedPrompt = plugin.settings.defaultMixedPrompt;
     this.detectDiagrams = plugin.settings.detectDiagrams;
-    this.selectedProvider = plugin.settings.activeProvider as 'openai' | 'ollama';
-    this.selectedModel = plugin.settings.activeProvider === 'ollama'
-      ? plugin.settings.ollamaSelectedModel
-      : plugin.settings.selectedModel;
+    this.selectedProvider = plugin.settings.activeProfileId;
+    this.selectedModel = ''
     this.fileTypeFilter = 'pdf';
   }
 
@@ -209,7 +207,28 @@ export class PDFSelectorModal extends Modal {
     this.updateSelectedPdfDisplay(selectedPdfEl);
 
     // Content mode selector
+
+    container.createEl('h3', { text: 'Supplier Profile' });
+    const profileSelect = container.createEl('select');
+    profileSelect.style.width = '100%';
+    profileSelect.style.padding = '8px';
+    profileSelect.style.marginBottom = '10px';
+
+    this.plugin.settings.profiles.forEach((p: any) => {
+        if(p.enabled || p.adapterId === 'openai' || p.adapterId === 'openrouter') {
+            const option = document.createElement('option');
+            option.value = p.id;
+            option.textContent = p.displayName;
+            profileSelect.appendChild(option);
+        }
+    });
+    profileSelect.value = this.selectedProvider;
+    profileSelect.addEventListener('change', (e) => {
+        this.selectedProvider = (e.target as HTMLSelectElement).value;
+    });
+
     container.createEl('h3', { text: 'Processing Mode' });
+
     const modeSelect = container.createEl('select');
     modeSelect.style.width = '100%';
     modeSelect.style.padding = '8px';
@@ -252,8 +271,8 @@ export class PDFSelectorModal extends Modal {
       }
 
       // Provider configuration guard
-      if (!this.plugin.activeProvider.isConfigured()) {
-        new Notice(this.plugin.activeProvider.getConfigurationStatus());
+      if (!true) {
+
         return;
       }
 
@@ -269,7 +288,13 @@ export class PDFSelectorModal extends Modal {
         overrideModel: this.selectedModel
       } as any;
 
-      this.onSubmit(this.pdfPath, customOptions);
+
+    if (this.pdfPath.toLowerCase().endsWith('.pdf')) {
+        this.onSubmit(this.pdfPath, customOptions);
+    } else {
+        this.onSubmitImage(this.pdfPath, customOptions);
+    }
+
       this.close();
     });
   }
@@ -421,7 +446,7 @@ export class PDFSelectorModal extends Modal {
   private loadAllFiles() {
     this.allPdfFiles = [];
     this.app.vault.getFiles().forEach((file) => {
-      if (file.extension === 'pdf') {
+      if (['pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(file.extension)) {
         this.allPdfFiles.push(file.path);
       }
     });

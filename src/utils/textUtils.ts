@@ -1,6 +1,19 @@
+import { parseMermaidBlocks, validateMermaidSyntax } from './mermaidValidation';
 // Preserve the exact regex from original for mermaid block detection
 export function formatMermaidDiagrams(text: string): string {
   const mermaidRegex = /```(?:mermaid)?\s*(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|journey)[\s\S]*?```/g;
+
+
+  const blocks = parseMermaidBlocks(text);
+  blocks.forEach((block, idx) => {
+      const isValid = validateMermaidSyntax(block);
+      if(!isValid) {
+          console.warn('[PDFTranscriber][Mermaid] Validation failed', { blockIndex: idx });
+          // Preserve output but maybe wrap in note?
+          // The instructions say "Preserve original generated output if validation fails",
+          // "Show a warning rather than silently discarding it."
+      }
+  });
 
   return text.replace(mermaidRegex, (match) => {
     if (!match.startsWith('```mermaid')) {
@@ -8,6 +21,7 @@ export function formatMermaidDiagrams(text: string): string {
     }
     return match;
   });
+
 }
 
 // Preserve original logic exactly

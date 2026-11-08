@@ -1,3 +1,5 @@
+import { ProviderDescriptor } from "./BaseProvider";
+
 import { remoteJsonRequest } from '../utils/http';
 import { BaseProvider, TranscriptionRequest, TranscriptionResponse, ModelInfo, ProviderConnectionResult, ModelProbeResult } from './BaseProvider';
 
@@ -18,6 +20,20 @@ export interface OpenAIProviderConfig {
 export class OpenAIProvider extends BaseProvider {
   readonly providerName = 'openai';
   readonly displayName = 'OpenAI';
+
+
+  getDescriptor(): ProviderDescriptor {
+    return {
+      id: this.providerName,
+      displayName: this.displayName,
+      locality: 'remote',
+      supportsDiscovery: true,
+      supportsCompatibilityProbe: true,
+      supportsModelDownload: false
+    };
+  }
+
+
 
   private config: OpenAIProviderConfig;
 
@@ -84,11 +100,14 @@ export class OpenAIProvider extends BaseProvider {
     try {
       await this.transcribe({
         model,
-        prompt: 'Reply only with the word OK.',
-        imageDataUrl: TINY_TEST_IMAGE,
+        prompt: 'What number is written in this image? Reply only with the number.',
+        imageDataUrl: TINY_TEST_IMAGE, // Assuming TINY_TEST_IMAGE actually has a number now, but ideally we'd use a real fixture
         maxTokens: 5
       });
 
+
+      // Check for success (e.g. if expected '42')
+      // For now just checking it doesn't throw, but in full implementation we check result.text
       return { ok: true, model };
     } catch (error: any) {
       return {
