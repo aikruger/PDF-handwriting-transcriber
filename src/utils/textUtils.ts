@@ -9,9 +9,6 @@ export function formatMermaidDiagrams(text: string): string {
       const isValid = validateMermaidSyntax(block);
       if(!isValid) {
           console.warn('[PDFTranscriber][Mermaid] Validation failed', { blockIndex: idx });
-          // Preserve output but maybe wrap in note?
-          // The instructions say "Preserve original generated output if validation fails",
-          // "Show a warning rather than silently discarding it."
       }
   });
 

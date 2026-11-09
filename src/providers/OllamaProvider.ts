@@ -1,7 +1,5 @@
-import { ProviderDescriptor } from "./BaseProvider";
-
 import { localJsonRequest } from '../utils/http';
-import { BaseProvider, TranscriptionRequest, TranscriptionResponse, ModelInfo, ProviderConnectionResult, ModelProbeResult } from './BaseProvider';
+import { BaseProvider, ProviderDescriptor, TranscriptionRequest, TranscriptionResponse, ModelInfo, ProviderConnectionResult, ModelProbeResult } from './BaseProvider';
 
 const TINY_TEST_IMAGE =
   'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolHRUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGy0lICYtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAoACgMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFhABAQEAAAAAAAAAAAAAAAAAAAER/9oACAEBAAEFAjJbN//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8BP//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8BP//Z';
@@ -47,18 +45,7 @@ export class OllamaProvider extends BaseProvider {
   readonly providerName = 'ollama';
   readonly displayName = 'Ollama (Local)';
 
-
-  getDescriptor(): ProviderDescriptor {
-    return {
-      id: this.providerName,
-      displayName: this.displayName,
-      locality: 'local',
-      supportsDiscovery: true,
-      supportsCompatibilityProbe: true,
-      supportsModelDownload: true
-    };
-  }
-
+  getDescriptor(): ProviderDescriptor { return { id: this.providerName, displayName: this.displayName, locality: 'local', supportsDiscovery: true, supportsCompatibilityProbe: true, supportsModelDownload: true }; }
 
 
   private config: OllamaProviderConfig;
@@ -135,13 +122,10 @@ export class OllamaProvider extends BaseProvider {
       await this.transcribe({
         model,
         prompt: 'What number is written in this image? Reply only with the number.',
-        imageDataUrl: TINY_TEST_IMAGE, // Assuming TINY_TEST_IMAGE actually has a number now, but ideally we'd use a real fixture
+        imageDataUrl: TINY_TEST_IMAGE,
         maxTokens: 5
       });
 
-
-      // Check for success (e.g. if expected '42')
-      // For now just checking it doesn't throw, but in full implementation we check result.text
       return { ok: true, model };
     } catch (error: any) {
       return {

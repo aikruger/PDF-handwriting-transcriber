@@ -1,5 +1,1 @@
-{
-    "samples": [
-        {"image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "expected": "graph TD\nA-->B"}
-    ]
-}
+{"samples":[{"image":"data:image/png;base64,iV","expected":"graph TD\nA-->B"}]}

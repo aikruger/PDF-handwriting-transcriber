@@ -6,14 +6,12 @@ export interface ProviderProfile {
   displayName: string;
   enabled: boolean;
   baseUrl?: string;
-  credentialRef?: string; // e.g. API Key or reference to it
-
+  credentialRef?: string;
   selectedModels: {
     handwriting?: string;
     diagram?: string;
     mixed?: string;
   };
-
   options: Record<string, unknown>;
 }
 
@@ -31,19 +29,12 @@ export interface TaskSelections {
 export interface ModelEvidence {
   profileId: string;
   modelId: string;
-
-  capabilitySource:
-    | 'catalogue'
-    | 'provider-metadata'
-    | 'manual'
-    | 'unknown';
-
+  capabilitySource: 'catalogue' | 'provider-metadata' | 'manual' | 'unknown';
   compatibility: {
     status: 'untested' | 'passed' | 'failed' | 'inconclusive';
     testedAt?: string;
     reason?: string;
   };
-
   quality: Partial<Record<TaskKind, {
     score: number;
     sampleCount: number;
