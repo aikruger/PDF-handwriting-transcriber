@@ -6,3 +6,34 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+
+/* PDF Transcriber Modal - Scoped Styles */
+.pdf-transcriber-modal .pdf-pages-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(3.25rem, 1fr));
+  gap: 0.5rem;
+  max-height: min(45vh, 24rem);
+  overflow-y: auto;
+  padding: 0.25rem;
+}
+
+.pdf-transcriber-modal .pdf-pages-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.pdf-transcriber-modal .pdf-pages-actions button {
+  flex: 1;
+}
+
+.pdf-transcriber-modal .nav-buttons-container button {
+  white-space: nowrap;
+}
+
+.pdf-transcriber-modal .shared-footer-container {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--background-modifier-border);
+}

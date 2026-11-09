@@ -3,6 +3,12 @@ import type PDFTranscriberPlugin from '../main';
 import { ensurePdfJsLoaded } from '../utils/pdfUtils';
 import { resolveJobConfig } from '../services/resolveJobConfig';
 
+export type PdfInfoState =
+  | { status: 'idle' }
+  | { status: 'loading'; requestId: number }
+  | { status: 'ready'; pageCount: number; cachedPath: string }
+  | { status: 'error'; message: string };
+
 export interface TranscriptionOptions {
   textPrompt?: string; diagramPrompt?: string; mixedPrompt?: string; detectDiagrams?: boolean; contentMode?: 'text' | 'diagram' | 'mixed'; selectedPages?: number[] | null;
   overrideProfileId?: string; overrideModelId?: string;
@@ -20,7 +26,6 @@ export class PDFSelectorModal extends Modal {
   private selectedPdfEl: HTMLElement | null = null;
 
   private selectedPages: number[] = [];
-  private numPagesInPdf: number = 0;
 
   private contentMode: 'text' | 'diagram' | 'mixed';
   private customTextPrompt: string;
@@ -77,7 +82,7 @@ export class PDFSelectorModal extends Modal {
       if (!this.pdfPath.toLowerCase().match(/\.(pdf)$/)) { new Notice('Select Pages is only available for PDF files'); return; }
       this.resetAllTabStyles([selectionTab, pagesTab, promptsTab]); pagesTab.classList.add('active'); this.applyActiveTabStyles(pagesTab);
       selectionContainer.style.display = 'none'; pagesContainer.style.display = 'block'; promptsContainer.style.display = 'none';
-      await this.loadPdfInfo(); this.createPagesUI(pagesContainer);
+      this.createPagesUI(pagesContainer); await this.loadPdfInfo(); this.createPagesUI(pagesContainer);
     });
 
     promptsTab.addEventListener('click', () => {
@@ -86,6 +91,57 @@ export class PDFSelectorModal extends Modal {
       this.createPromptsUI(promptsContainer);
     });
     this.createSelectionUI(selectionContainer);
+
+    // Shared Footer
+    const footerContainer = contentEl.createDiv('shared-footer-container');
+    footerContainer.style.marginTop = '20px';
+    footerContainer.style.borderTop = '1px solid var(--background-modifier-border)';
+    footerContainer.style.paddingTop = '15px';
+
+    const processBtn = footerContainer.createEl('button', { text: '▶️ Generate Transcription' });
+    processBtn.style.width = '100%';
+    processBtn.style.padding = '10px';
+    processBtn.style.backgroundColor = 'var(--interactive-accent)';
+    processBtn.style.color = 'var(--text-on-accent)';
+    processBtn.style.border = 'none';
+    processBtn.style.borderRadius = '4px';
+    processBtn.style.cursor = 'pointer';
+    processBtn.style.fontWeight = 'bold';
+
+    processBtn.addEventListener('click', async () => {
+      if (this.isSubmitting) return;
+      if (!this.pdfPath) { new Notice('Please select a file first'); return; }
+
+      const customOptions: TranscriptionOptions = {
+        textPrompt: this.customTextPrompt, diagramPrompt: this.customDiagramPrompt, mixedPrompt: this.customMixedPrompt, detectDiagrams: this.detectDiagrams,
+        contentMode: this.contentMode, selectedPages: this.selectedPages.length > 0 ? this.selectedPages : null,
+        overrideProfileId: this.selectedProfileId, overrideModelId: this.selectedModelId
+      };
+
+      try {
+         const profile = this.plugin.settings.profiles.find((p: any) => p.id === this.selectedProfileId);
+         if (!profile) throw new Error('Selected profile not found.');
+         if (!profile.enabled) throw new Error(`Profile "${profile.displayName}" is disabled. Enable it in settings.`);
+         const config = resolveJobConfig(this.plugin.settings, this.contentMode, customOptions);
+         const provider = this.plugin.providerRegistry.getAdapter(profile);
+         if (!provider.isConfigured()) throw new Error(provider.getConfigurationStatus());
+         if (!config.modelId) throw new Error("No model resolved for task");
+
+         console.log('[PDFTranscriber][Modal] Selection resolved', { profileId: config.profileId, modelId: config.modelId, task: config.task, usesModelOverride: !!this.selectedModelId });
+         this.isSubmitting = true; processBtn.disabled = true; processBtn.textContent = 'Processing...';
+         console.log('[PDFTranscriber][Modal] Submitted', { profileId: config.profileId, modelId: config.modelId, task: config.task, fileType: this.pdfPath.split('.').pop(), selectedPageCount: this.selectedPages.length || 'all' });
+
+         if (this.pdfPath.toLowerCase().match(/\.(png|jpg|jpeg|webp)$/)) await this.onSubmitImage(this.pdfPath, customOptions);
+         else await this.onSubmit(this.pdfPath, customOptions);
+         this.close();
+      } catch (e: any) {
+          console.warn('[PDFTranscriber][Modal] Validation blocked', { profileId: this.selectedProfileId, reasonCode: e.message });
+          new Notice(e.message);
+      } finally {
+          this.isSubmitting = false; processBtn.disabled = false; processBtn.textContent = '▶️ Generate Transcription';
+      }
+    });
+
   }
 
   private applyActiveTabStyles(tab: HTMLElement) { tab.style.backgroundColor = 'var(--interactive-accent)'; tab.style.color = 'var(--text-on-accent)'; tab.style.borderBottom = '3px solid var(--interactive-accent-hover)'; tab.style.fontWeight = 'bold'; }
@@ -166,43 +222,7 @@ export class PDFSelectorModal extends Modal {
     modeSelect.value = this.contentMode;
     modeSelect.addEventListener('change', (e) => { this.contentMode = (e.target as HTMLSelectElement).value as any; renderModelControls(); });
 
-    const processBtn = container.createEl('button', { text: '▶️ Generate Transcription' });
-    processBtn.style.width = '100%'; processBtn.style.padding = '10px'; processBtn.style.marginTop = '15px'; processBtn.style.backgroundColor = 'var(--interactive-accent)'; processBtn.style.color = 'var(--text-on-accent)'; processBtn.style.border = 'none'; processBtn.style.borderRadius = '4px'; processBtn.style.cursor = 'pointer'; processBtn.style.fontWeight = 'bold';
-
-    processBtn.addEventListener('click', async () => {
-      if (this.isSubmitting) return;
-      if (!this.pdfPath) { new Notice('Please select a file first'); return; }
-
-      const customOptions: TranscriptionOptions = {
-        textPrompt: this.customTextPrompt, diagramPrompt: this.customDiagramPrompt, mixedPrompt: this.customMixedPrompt, detectDiagrams: this.detectDiagrams,
-        contentMode: this.contentMode, selectedPages: this.selectedPages.length > 0 ? this.selectedPages : null,
-        overrideProfileId: this.selectedProfileId, overrideModelId: this.selectedModelId
-      };
-
-      try {
-         const profile = this.plugin.settings.profiles.find((p: any) => p.id === this.selectedProfileId);
-         if (!profile) throw new Error('Selected profile not found.');
-         if (!profile.enabled) throw new Error(`Profile "${profile.displayName}" is disabled. Enable it in settings.`);
-         const config = resolveJobConfig(this.plugin.settings, this.contentMode, customOptions);
-         const provider = this.plugin.providerRegistry.getAdapter(profile);
-         if (!provider.isConfigured()) throw new Error(provider.getConfigurationStatus());
-         if (!config.modelId) throw new Error("No model resolved for task");
-
-         console.log('[PDFTranscriber][Modal] Selection resolved', { profileId: config.profileId, modelId: config.modelId, task: config.task, usesModelOverride: !!this.selectedModelId });
-         this.isSubmitting = true; processBtn.disabled = true; processBtn.textContent = 'Processing...';
-         console.log('[PDFTranscriber][Modal] Submitted', { profileId: config.profileId, modelId: config.modelId, task: config.task, fileType: this.pdfPath.split('.').pop(), selectedPageCount: this.selectedPages.length || 'all' });
-
-         if (this.pdfPath.toLowerCase().match(/\.(png|jpg|jpeg|webp)$/)) await this.onSubmitImage(this.pdfPath, customOptions);
-         else await this.onSubmit(this.pdfPath, customOptions);
-         this.close();
-      } catch (e: any) {
-          console.warn('[PDFTranscriber][Modal] Validation blocked', { profileId: this.selectedProfileId, reasonCode: e.message });
-          new Notice(e.message);
-      } finally {
-          this.isSubmitting = false; processBtn.disabled = false; processBtn.textContent = '▶️ Generate Transcription';
       }
-    });
-  }
 
   private updateSelectedPdfDisplay(element: HTMLElement) {
     element.empty();
@@ -210,21 +230,135 @@ export class PDFSelectorModal extends Modal {
     else { const fileName = this.pdfPath.split('/').pop(); const folderPath = this.pdfPath.substring(0, this.pdfPath.lastIndexOf('/')); element.style.color = 'var(--text-normal)'; element.style.fontStyle = 'normal'; const nameEl = element.createEl('strong', { text: fileName }); nameEl.style.display = 'block'; nameEl.style.marginBottom = '4px'; nameEl.style.fontSize = '14px'; const pathEl = element.createEl('small', { text: `📁 ${folderPath}` }); pathEl.style.color = 'var(--text-muted)'; pathEl.style.display = 'block'; }
   }
 
+
   private createPagesUI(container: HTMLElement) {
     container.empty();
-    if (this.numPagesInPdf === 0) { container.createEl('p', { text: 'Loading PDF information...' }); return; }
-    container.createEl('h3', { text: `Select Pages (Total: ${this.numPagesInPdf})` });
-    const description = container.createEl('p'); description.textContent = 'Click page numbers to toggle selection'; description.style.color = 'var(--text-muted)'; description.style.marginBottom = '15px';
-    const gridContainer = container.createDiv(); gridContainer.style.display = 'grid'; gridContainer.style.gridTemplateColumns = 'repeat(auto-fill, minmax(50px, 1fr))'; gridContainer.style.gap = '8px'; gridContainer.style.marginBottom = '15px';
-    for (let i = 1; i <= this.numPagesInPdf; i++) {
-      const pageBtn = gridContainer.createEl('button', { text: String(i) });
-      pageBtn.style.padding = '10px'; pageBtn.style.textAlign = 'center'; pageBtn.style.border = '1px solid var(--background-modifier-border)'; pageBtn.style.borderRadius = '4px'; pageBtn.style.cursor = 'pointer';
-      if (this.selectedPages.includes(i)) { pageBtn.style.backgroundColor = 'var(--interactive-accent)'; pageBtn.style.color = 'var(--text-on-accent)'; }
-      pageBtn.addEventListener('click', () => { if (this.selectedPages.includes(i)) { this.selectedPages = this.selectedPages.filter((p) => p !== i); } else { this.selectedPages.push(i); this.selectedPages.sort((a, b) => a - b); } this.createPagesUI(container); });
+
+    if (this.pdfInfoState.status === 'loading' || this.pdfInfoState.status === 'idle') {
+      const loadingEl = container.createEl('div', { text: 'Loading PDF information...', cls: 'pdf-loading-panel' });
+      loadingEl.style.padding = '20px';
+      loadingEl.style.textAlign = 'center';
+      loadingEl.style.fontStyle = 'italic';
+      loadingEl.style.color = 'var(--text-muted)';
+      return;
     }
-    const buttonGroup = container.createDiv(); buttonGroup.style.display = 'flex'; buttonGroup.style.gap = '8px';
-    const selectAllBtn = buttonGroup.createEl('button', { text: 'Select All' }); selectAllBtn.style.flex = '1'; selectAllBtn.addEventListener('click', () => { this.selectedPages = Array.from({ length: this.numPagesInPdf }, (_, i) => i + 1); this.createPagesUI(container); });
-    const clearBtn = buttonGroup.createEl('button', { text: 'Clear' }); clearBtn.style.flex = '1'; clearBtn.addEventListener('click', () => { this.selectedPages = []; this.createPagesUI(container); });
+
+    if (this.pdfInfoState.status === 'error') {
+      const errorEl = container.createEl('div', { cls: 'pdf-error-panel' });
+      errorEl.style.padding = '20px';
+      errorEl.style.textAlign = 'center';
+
+      errorEl.createEl('p', { text: 'Failed to load PDF metadata.', cls: 'error-message' }).style.color = 'var(--text-error)';
+      errorEl.createEl('p', { text: this.pdfInfoState.message }).style.fontSize = '12px';
+
+      const retryBtn = errorEl.createEl('button', { text: 'Retry' });
+      retryBtn.addEventListener('click', async () => {
+         this.pdfInfoState = { status: 'idle' }; // reset to force re-fetch
+         this.createPagesUI(container);
+         await this.loadPdfInfo();
+         this.createPagesUI(container);
+      });
+      return;
+    }
+
+    // Ready state
+    const pageCount = this.pdfInfoState.pageCount;
+    container.createEl('h3', { text: `Select Pages (Total: ${pageCount})` });
+
+    const summary = container.createEl('p', { cls: 'pdf-selection-summary' });
+    summary.style.color = 'var(--text-muted)';
+    summary.style.marginBottom = '15px';
+
+    const updateSummary = () => {
+       if (this.selectedPages.length === 0) {
+           summary.textContent = 'Will process the default page range (see settings).';
+       } else if (this.selectedPages.length === pageCount) {
+           summary.textContent = 'All pages selected.';
+       } else {
+           summary.textContent = `${this.selectedPages.length} pages selected.`;
+       }
+    };
+    updateSummary();
+
+    const buttonGroup = container.createDiv('pdf-pages-actions');
+    const selectAllBtn = buttonGroup.createEl('button', { text: 'Select All' });
+    const clearBtn = buttonGroup.createEl('button', { text: 'Clear' });
+
+    const gridContainer = container.createDiv('pdf-pages-grid');
+
+    this.pageGridElements.clear();
+
+    for (let i = 1; i <= pageCount; i++) {
+      const pageBtn = gridContainer.createEl('button', { text: String(i) });
+      pageBtn.type = 'button';
+      const isSelected = this.selectedPages.includes(i);
+      pageBtn.setAttribute('aria-pressed', String(isSelected));
+      if (isSelected) {
+        pageBtn.classList.add('selected');
+        pageBtn.style.backgroundColor = 'var(--interactive-accent)';
+        pageBtn.style.color = 'var(--text-on-accent)';
+      }
+
+      this.pageGridElements.set(i, pageBtn);
+
+      pageBtn.addEventListener('click', () => {
+        const currentlySelected = this.selectedPages.includes(i);
+        if (currentlySelected) {
+          this.selectedPages = this.selectedPages.filter((p) => p !== i);
+        } else {
+          this.selectedPages.push(i);
+          this.selectedPages.sort((a, b) => a - b);
+        }
+
+        // Update DOM in-place
+        const newSelected = !currentlySelected;
+        pageBtn.setAttribute('aria-pressed', String(newSelected));
+        if (newSelected) {
+           pageBtn.classList.add('selected');
+           pageBtn.style.backgroundColor = 'var(--interactive-accent)';
+           pageBtn.style.color = 'var(--text-on-accent)';
+        } else {
+           pageBtn.classList.remove('selected');
+           pageBtn.style.backgroundColor = '';
+           pageBtn.style.color = '';
+        }
+        updateSummary();
+      });
+    }
+
+    selectAllBtn.addEventListener('click', () => {
+      this.selectedPages = Array.from({ length: pageCount }, (_, i) => i + 1);
+      for (let i = 1; i <= pageCount; i++) {
+          const btn = this.pageGridElements.get(i);
+          if (btn) {
+              btn.setAttribute('aria-pressed', 'true');
+              btn.classList.add('selected');
+              btn.style.backgroundColor = 'var(--interactive-accent)';
+              btn.style.color = 'var(--text-on-accent)';
+          }
+      }
+      updateSummary();
+    });
+
+    clearBtn.addEventListener('click', () => {
+      this.selectedPages = [];
+      for (let i = 1; i <= pageCount; i++) {
+          const btn = this.pageGridElements.get(i);
+          if (btn) {
+              btn.setAttribute('aria-pressed', 'false');
+              btn.classList.remove('selected');
+              btn.style.backgroundColor = '';
+              btn.style.color = '';
+          }
+      }
+      updateSummary();
+    });
+
+    console.log('[PDFTranscriber][Pages] Rendered', {
+      pageCount,
+      renderedButtonCount: this.pageGridElements.size,
+      selectedPageCount: this.selectedPages.length
+    });
   }
 
   private createPromptsUI(container: HTMLElement) {
@@ -254,34 +388,73 @@ export class PDFSelectorModal extends Modal {
       if (file === this.pdfPath) { resultItem.style.backgroundColor = 'var(--background-modifier-hover)'; resultItem.style.borderLeft = '3px solid var(--interactive-accent)'; resultItem.style.paddingLeft = '9px'; nameEl.style.color = 'var(--interactive-accent)'; }
       resultItem.addEventListener('mouseenter', () => { if (file !== this.pdfPath) { resultItem.style.backgroundColor = 'var(--background-modifier-hover)'; } });
       resultItem.addEventListener('mouseleave', () => { if (file !== this.pdfPath) { resultItem.style.backgroundColor = 'transparent'; } });
-      resultItem.addEventListener('click', () => { this.pdfPath = file; this.selectedPages = []; this.numPagesInPdf = 0; if (this.selectedPdfEl) this.updateSelectedPdfDisplay(this.selectedPdfEl); this.displaySearchResults(); new Notice(`✅ Selected: ${file.split('/').pop()}`); });
+      resultItem.addEventListener('click', () => { this.pdfPath = file; this.selectedPages = [];  if (this.selectedPdfEl) this.updateSelectedPdfDisplay(this.selectedPdfEl); this.displaySearchResults(); new Notice(`✅ Selected: ${file.split('/').pop()}`); });
     });
   }
 
 
-  private currentPdfLoadPath: string = '';
+  private pdfInfoRequestId: number = 0;
+  private pdfInfoState: PdfInfoState = { status: 'idle' };
+  private isClosed: boolean = false;
+  private pageGridElements: Map<number, HTMLButtonElement> = new Map();
+
 
   private async loadPdfInfo() {
-    this.currentPdfLoadPath = this.pdfPath;
+    if (this.pdfInfoState.status === 'ready' && this.pdfInfoState.cachedPath === this.pdfPath) {
+      // Re-use cached metadata
+
+      return;
+    }
+
+    if (this.pdfInfoState.status === 'loading') {
+       // Already loading, just let the ongoing request handle the UI update or ignore it.
+       return;
+    }
+
+    const pathAtStart = this.pdfPath;
+    const requestId = ++this.pdfInfoRequestId;
+    this.pdfInfoState = { status: 'loading', requestId };
+
+    console.log('[PDFTranscriber][Pages] Load started', { requestId });
+
     try {
       const processor = this.plugin;
       await ensurePdfJsLoaded();
       const pdfBuffer = await processor.readPDFFile(this.pdfPath);
-      if (!pdfBuffer) { throw new Error('Could not read PDF'); }
+      if (!pdfBuffer) { throw new Error('Could not read PDF file from disk'); }
+
       const loadingTask = (window as any).pdfjsLib.getDocument({ data: pdfBuffer });
       const pdf = await loadingTask.promise;
+      const pageCount = pdf.numPages;
 
-      if (this.pdfPath === this.currentPdfLoadPath) {
-          this.numPagesInPdf = pdf.numPages;
+      // Release document if there's a destroy method on pdf (which pdf.js usually provides)
+      if (pdf && typeof pdf.destroy === 'function') {
+         pdf.destroy();
       }
-    } catch (error) {
-      if (this.pdfPath === this.currentPdfLoadPath) {
-          console.error('Error loading PDF info:', error);
-          new Notice('Error loading PDF information');
-          this.numPagesInPdf = 0;
+
+      if (requestId !== this.pdfInfoRequestId || pathAtStart !== this.pdfPath || this.isClosed) {
+          console.log('[PDFTranscriber][Pages] Stale result ignored', { requestId });
+          return;
       }
+
+      const durationMs = 0; // We could track time but let's just log placeholder for now
+      console.log('[PDFTranscriber][Pages] Metadata ready', { requestId, pageCount, durationMs });
+
+      this.pdfInfoState = { status: 'ready', pageCount, cachedPath: this.pdfPath };
+
+    } catch (error: any) {
+      if (requestId !== this.pdfInfoRequestId || pathAtStart !== this.pdfPath || this.isClosed) {
+          return;
+      }
+      console.error('Error loading PDF info:', error);
+      this.pdfInfoState = { status: 'error', message: error.message || 'Error parsing PDF' };
+
     }
   }
 
-  onClose() { const { contentEl } = this; contentEl.empty(); }
+  onClose() {
+    this.isClosed = true;
+    const { contentEl } = this;
+    contentEl.empty();
+  }
 }
