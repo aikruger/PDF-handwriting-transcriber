@@ -1,3 +1,6 @@
+export type { ModelInfo } from '../providers/BaseProvider';
+export type { ModelRelevance } from '../services/ModelRecommender';
+
 export type TaskKind = 'handwriting' | 'diagram' | 'mixed';
 
 export interface ProviderProfile {

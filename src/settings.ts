@@ -1,4 +1,5 @@
-import { PluginSettings, ProviderProfile } from './models/types';
+import { ModelInfo, PluginSettings, ProviderProfile, TaskKind } from './models/types';
+import { contentModeToTask } from './services/resolveJobConfig';
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type PDFTranscriberPlugin from './main';
 
@@ -170,11 +171,41 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName('Max Pages (Fallback)').addText((text) => text.setPlaceholder('50').setValue(String(this.plugin.settings.maxPages)).onChange(async (value) => { const parsed = parseInt(value, 10); if (!isNaN(parsed) && parsed > 0) { this.plugin.settings.maxPages = parsed; await this.plugin.saveSettings(); } }));
   }
 
+  private getModelTaskScore(model: ModelInfo, task: TaskKind): number | undefined {
+    if (model.relevance) {
+      if (task === 'handwriting') return model.relevance.taskScores?.handwriting ?? model.relevance.score;
+      if (task === 'diagram') return model.relevance.taskScores?.diagram ?? model.relevance.score;
+      return model.relevance.taskScores?.mixed ?? model.relevance.score;
+    }
+    return model.score;
+  }
+
+  private formatModelOptionLabel(model: ModelInfo, task: TaskKind): string {
+    const displayName = model.displayName || model.id;
+    if (!model.relevance) {
+      return displayName;
+    }
+    const taskScore = this.getModelTaskScore(model, task) ?? model.relevance.score;
+    const rawReason = (model.relevance.reason || model.reason || '').trim();
+    const truncatedReason = rawReason.length > 48
+      ? `${rawReason.slice(0, 47).trimEnd()}…`
+      : rawReason;
+    return truncatedReason
+      ? `${displayName} — ${taskScore} · ${truncatedReason}`
+      : `${displayName} — ${taskScore}`;
+  }
+
   private addModelControls(containerEl: HTMLElement, activeProfile: ProviderProfile) {
-    const createModelSelector = (task: 'handwriting' | 'diagram' | 'mixed', label: string) => {
+    const createModelSelector = (task: TaskKind, label: string) => {
         new Setting(containerEl).setName(`${label} Model`).addDropdown((dropdown) => {
-             const discovered = activeProfile.options?.discoveredModels as any[];
-             if (discovered && discovered.length > 0) { discovered.forEach(m => dropdown.addOption(m.id, m.displayName)); }
+             const discovered = activeProfile.options?.discoveredModels as ModelInfo[] | undefined;
+             if (discovered && discovered.length > 0) {
+               const hasRelevance = discovered.some(m => Boolean(m.relevance));
+               const ordered = hasRelevance
+                 ? [...discovered].sort((a, b) => (this.getModelTaskScore(b, task) ?? 0) - (this.getModelTaskScore(a, task) ?? 0))
+                 : discovered;
+               ordered.forEach(m => dropdown.addOption(m.id, this.formatModelOptionLabel(m, task)));
+             }
              else if (activeProfile.selectedModels && activeProfile.selectedModels[task]) { dropdown.addOption(activeProfile.selectedModels[task] as string, activeProfile.selectedModels[task] as string); }
              dropdown.setValue((activeProfile.selectedModels && activeProfile.selectedModels[task]) || '');
              dropdown.onChange(async (val) => {
@@ -196,5 +227,24 @@ export class PDFTranscriberSettingTab extends PluginSettingTab {
   private addProfileActions(containerEl: HTMLElement, activeProfile: ProviderProfile) {
         new Setting(containerEl).setName('Test Connection').addButton((button) => button.setButtonText('Test Connection').onClick(async () => { await this.plugin.testProviderConnection(activeProfile.id); this.display(); }));
         new Setting(containerEl).setName('Refresh Catalogue').addButton((button) => button.setButtonText('Refresh Models').onClick(async () => { await this.plugin.refreshProviderModels(activeProfile.id); this.display(); }));
+
+        const discovered = (activeProfile.options?.discoveredModels as ModelInfo[] | undefined) ?? [];
+        if (discovered.length > 0) {
+          const visionModels = discovered.filter(m => m.supportsVision !== false);
+          const rankedPool = visionModels.length > 0 ? visionModels : discovered;
+          const currentTask: TaskKind = contentModeToTask(this.plugin.settings.contentMode || 'mixed');
+          const sortedForTask = [...rankedPool].sort(
+            (a, b) => (this.getModelTaskScore(b, currentTask) ?? 0) - (this.getModelTaskScore(a, currentTask) ?? 0)
+          );
+          const topModel = sortedForTask[0];
+          const topScore = topModel ? this.getModelTaskScore(topModel, currentTask) : undefined;
+          const summaryText = topModel && topScore !== undefined
+            ? `Ranked ${rankedPool.length} vision models · Top for ${currentTask}: ${topModel.id} (${topScore})`
+            : `Ranked ${rankedPool.length} vision models`;
+          containerEl.createEl('div', {
+            cls: 'setting-item-description',
+            text: summaryText
+          });
+        }
   }
 }

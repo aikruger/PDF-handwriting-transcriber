@@ -1,10 +1,35 @@
 
+import type { ModelRelevance } from '../services/ModelRecommender';
+
 export interface TranscriptionRequest { imageDataUrl: string; prompt: string; model: string; maxTokens?: number; }
 export interface TranscriptionResponse { text: string; model: string; provider: string; }
-export interface ModelInfo { id: string; displayName: string; supportsVision: boolean; recommended?: boolean; tested?: boolean; testStatus?: 'passed' | 'failed' | 'untested'; score?: number; reason?: string; provider?: string; }
+export interface ModelInfo {
+  id: string;
+  displayName: string;
+  supportsVision: boolean;
+  description?: string;
+  recommended?: boolean;
+  tested?: boolean;
+  testStatus?: 'passed' | 'failed' | 'untested';
+  score?: number;
+  reason?: string;
+  provider?: string;
+  relevance?: ModelRelevance;
+  contextLength?: number;
+  maxOutputTokens?: number;
+  promptPricePerMTok?: number;
+}
 export interface ProviderConnectionResult { ok: boolean; message: string; statusCode?: number; }
 export interface ModelProbeResult { ok: boolean; model: string; reason?: string; }
-export interface ProviderDescriptor { id: string; displayName: string; locality: 'local' | 'remote' | 'configurable'; supportsDiscovery: boolean; supportsCompatibilityProbe: boolean; supportsModelDownload: boolean; }
+export interface ProviderDescriptor {
+  id: string;
+  displayName: string;
+  locality: 'local' | 'remote' | 'configurable';
+  supportsDiscovery: boolean;
+  supportsCompatibilityProbe: boolean;
+  supportsModelDownload: boolean;
+  supportsRecommendation?: boolean;
+}
 export abstract class BaseProvider {
   abstract readonly providerName: string;
   abstract readonly displayName: string;

@@ -1,4 +1,5 @@
 import { BaseProvider, ProviderDescriptor, TranscriptionRequest, TranscriptionResponse, ModelInfo, ProviderConnectionResult } from './BaseProvider';
+import { recommendModels } from '../services/ModelRecommender';
 import { remoteJsonRequest } from '../utils/http';
 import { Logger } from '../utils/logger';
 
@@ -7,7 +8,7 @@ export interface OpenRouterConfig { apiKey: string; requireDataPrivacy: boolean;
 export class OpenRouterProvider extends BaseProvider {
   readonly providerName = 'openrouter'; readonly displayName = 'OpenRouter'; private config: OpenRouterConfig;
   constructor(config: OpenRouterConfig) { super(); this.config = config; }
-  getDescriptor(): ProviderDescriptor { return { id: this.providerName, displayName: this.displayName, locality: 'remote', supportsDiscovery: true, supportsCompatibilityProbe: true, supportsModelDownload: false }; }
+  getDescriptor(): ProviderDescriptor { return { id: this.providerName, displayName: this.displayName, locality: 'remote', supportsDiscovery: true, supportsCompatibilityProbe: true, supportsModelDownload: false, supportsRecommendation: true }; }
   isConfigured(): boolean { return !!this.config.apiKey; }
   getConfigurationStatus(): string { return this.isConfigured() ? 'Configured' : 'OpenRouter API key is not set.'; }
   async testConnection(): Promise<ProviderConnectionResult> {
@@ -22,11 +23,36 @@ export class OpenRouterProvider extends BaseProvider {
       const data = await remoteJsonRequest({ url: 'https://openrouter.ai/api/v1/models', method: 'GET' });
       const result: ModelInfo[] = [];
       for (const m of (data.data ?? [])) {
-        if (m.architecture?.modality?.includes('image') && m.architecture?.modality?.includes('text')) {
-            result.push({ id: m.id, displayName: m.name, supportsVision: true, provider: this.providerName, tested: false, testStatus: 'untested' });
+        const inputModalities = m.architecture?.input_modalities;
+        const supportsVisionAndText = Array.isArray(inputModalities)
+          ? inputModalities.includes('image') && inputModalities.includes('text')
+          : Boolean(m.architecture?.modality?.includes('image') && m.architecture?.modality?.includes('text'));
+
+        if (supportsVisionAndText) {
+          const rawPromptPrice = m.pricing?.prompt !== undefined ? parseFloat(String(m.pricing.prompt)) : NaN;
+          const promptPricePerMTok = !isNaN(rawPromptPrice) && isFinite(rawPromptPrice)
+            ? Number((rawPromptPrice * 1_000_000).toFixed(4))
+            : undefined;
+          const contextLength = typeof m.context_length === 'number' ? m.context_length : undefined;
+          const maxOutputTokens = typeof m.top_provider?.max_completion_tokens === 'number'
+            ? m.top_provider.max_completion_tokens
+            : undefined;
+
+          result.push({
+            id: m.id,
+            displayName: m.name || m.id,
+            description: typeof m.description === 'string' ? m.description : undefined,
+            supportsVision: true,
+            provider: this.providerName,
+            tested: false,
+            testStatus: 'untested',
+            contextLength,
+            maxOutputTokens,
+            promptPricePerMTok
+          });
         }
       }
-      return result;
+      return recommendModels(result, this.providerName);
     } catch (e: any) { Logger.error('OpenRouter', 'Failed to fetch models', { message: e.message }); return []; }
   }
   async transcribe(request: TranscriptionRequest): Promise<TranscriptionResponse> {

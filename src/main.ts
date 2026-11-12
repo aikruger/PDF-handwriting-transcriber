@@ -71,8 +71,18 @@ export default class PDFTranscriberPlugin extends Plugin {
       if (!profile) return;
       const provider = this.providerRegistry.getAdapter(profile, true);
       const models = await provider.fetchModels();
-      console.log('[PDFTranscriber][Catalogue] Refreshed', { profileId, adapterId: provider.getDescriptor().id, modelCount: models.length, source: 'live' });
-      new Notice(`Fetched ${models.length} models from ${provider.displayName}`);
+      const top3 = models.slice(0, 3).map(m => ({ id: m.id, score: m.relevance?.score ?? m.score ?? 0 }));
+      console.log('[PDFTranscriber][Catalogue] Refreshed', {
+        profileId,
+        adapterId: provider.getDescriptor().id,
+        modelCount: models.length,
+        source: 'live',
+        topModels: top3
+      });
+      const topModel = models[0];
+      const topScore = topModel ? (topModel.relevance?.score ?? topModel.score) : undefined;
+      const topSuffix = topModel && topScore !== undefined ? ` — top: ${topModel.id} (${topScore})` : '';
+      new Notice(`Fetched ${models.length} models from ${provider.displayName}${topSuffix}`);
 
       if (!profile.options) profile.options = {};
       profile.options.discoveredModels = models;

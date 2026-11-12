@@ -1,4 +1,5 @@
 import { remoteJsonRequest } from '../utils/http';
+import { recommendModels } from '../services/ModelRecommender';
 import { BaseProvider, ProviderDescriptor, TranscriptionRequest, TranscriptionResponse, ModelInfo, ProviderConnectionResult, ModelProbeResult } from './BaseProvider';
 
 const OPENAI_FALLBACK_MODELS: ModelInfo[] = [
@@ -19,7 +20,7 @@ export class OpenAIProvider extends BaseProvider {
   readonly providerName = 'openai';
   readonly displayName = 'OpenAI';
 
-  getDescriptor(): ProviderDescriptor { return { id: this.providerName, displayName: this.displayName, locality: 'remote', supportsDiscovery: true, supportsCompatibilityProbe: true, supportsModelDownload: false }; }
+  getDescriptor(): ProviderDescriptor { return { id: this.providerName, displayName: this.displayName, locality: 'remote', supportsDiscovery: true, supportsCompatibilityProbe: true, supportsModelDownload: false, supportsRecommendation: true }; }
 
 
   private config: OpenAIProviderConfig;
@@ -166,21 +167,21 @@ export class OpenAIProvider extends BaseProvider {
           testStatus: 'untested',
           score: this.scoreModelId(model.id),
           recommended: false
-        }))
-        .sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
+        }));
 
-      return models.length > 0 ? models : this.getDefaultModels();
+      return models.length > 0 ? recommendModels(models, this.providerName) : this.getDefaultModels();
     } catch {
       return this.getDefaultModels();
     }
   }
 
   getDefaultModels(): ModelInfo[] {
-    return OPENAI_FALLBACK_MODELS.map((m, index) => ({
+    const models: ModelInfo[] = OPENAI_FALLBACK_MODELS.map((m, index) => ({
       ...m,
       recommended: index === 0,
       score: this.scoreModelId(m.id)
     }));
+    return recommendModels(models, this.providerName);
   }
 
   // Allow settings to update the config without reinstantiating

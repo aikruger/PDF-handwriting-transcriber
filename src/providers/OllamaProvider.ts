@@ -1,4 +1,5 @@
 import { localJsonRequest } from '../utils/http';
+import { recommendModels } from '../services/ModelRecommender';
 import { BaseProvider, ProviderDescriptor, TranscriptionRequest, TranscriptionResponse, ModelInfo, ProviderConnectionResult, ModelProbeResult } from './BaseProvider';
 
 const TINY_TEST_IMAGE =
@@ -45,7 +46,7 @@ export class OllamaProvider extends BaseProvider {
   readonly providerName = 'ollama';
   readonly displayName = 'Ollama (Local)';
 
-  getDescriptor(): ProviderDescriptor { return { id: this.providerName, displayName: this.displayName, locality: 'local', supportsDiscovery: true, supportsCompatibilityProbe: true, supportsModelDownload: true }; }
+  getDescriptor(): ProviderDescriptor { return { id: this.providerName, displayName: this.displayName, locality: 'local', supportsDiscovery: true, supportsCompatibilityProbe: true, supportsModelDownload: true, supportsRecommendation: true }; }
 
 
   private config: OllamaProviderConfig;
@@ -196,7 +197,7 @@ export class OllamaProvider extends BaseProvider {
         return {
           id: fullName,
           displayName: fullName,
-          supportsVision: isKnownVision,
+          supportsVision: isKnownVision || isDescriptionOnly,
           provider: this.providerName,
           tested: false,
           testStatus: 'untested',
@@ -210,14 +211,14 @@ export class OllamaProvider extends BaseProvider {
         };
       });
 
-      return result.sort((a, b) => (b.score || 0) - (a.score || 0));
+      return recommendModels(result, this.providerName);
     } catch {
       return this.getDefaultModels();
     }
   }
 
   getDefaultModels(): ModelInfo[] {
-    return OLLAMA_VISION_MODELS.map((m, index) => ({
+    const models: ModelInfo[] = OLLAMA_VISION_MODELS.map((m, index) => ({
       ...m,
       provider: this.providerName,
       tested: false,
@@ -225,6 +226,7 @@ export class OllamaProvider extends BaseProvider {
       score: this.scoreModelId(m.id),
       recommended: index === 0
     }));
+    return recommendModels(models, this.providerName);
   }
 
 
